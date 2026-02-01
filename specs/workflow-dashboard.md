@@ -79,6 +79,49 @@ Escalate only when:
 - "This mockup doesn't cover edge case Z" — Handle it sensibly
 - "I found a better way to do this" — Great, do it
 
+### How to Escalate
+
+When you do need input, follow this order:
+
+**1. Ask Claude first.**
+
+Before interrupting a human, ask Claude. Describe the problem, the options you see, and what you're leaning toward. Claude can often help you think through it or point out something you missed. This is free and instant.
+
+**2. Value your peers' time at 3x yours.**
+
+(We tell them the same thing about your time — it's not a hierarchy thing, it's a communication friction thing. Context-switching is expensive for everyone.)
+
+Before pinging a peer, ask: "Is this worth 15 minutes of their time?" If yes, proceed. If not, make a decision and move on.
+
+**3. Provide a written deliverable.**
+
+Never escalate with just "Hey, got a minute?" or "What should I do about X?"
+
+Instead, send a brief written summary:
+
+```
+## Question: [One-line summary]
+
+### Context
+[2-3 sentences on what you're trying to do]
+
+### Options
+A. [First option] — [Tradeoff]
+B. [Second option] — [Tradeoff]
+C. [Third option] — [Tradeoff]
+
+### Recommendation
+I recommend **Option B** because [reasoning].
+
+### What I need from you
+[Specific ask: "Confirm this is right" / "Poke holes" / "Tell me what I'm missing"]
+```
+
+This format:
+- Forces you to think through the problem (often you'll solve it yourself)
+- Respects their time (they can respond async in 2 minutes)
+- Gets you a faster, better answer
+
 ### Questions Are Fine
 
 Asking questions is different from escalating. If you're curious about context or want to understand the "why" behind something, ask anytime. The goal is to avoid blocking yourself waiting for approval on things you can decide.
