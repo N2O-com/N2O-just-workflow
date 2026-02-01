@@ -135,9 +135,10 @@ sqlite3 .pm/tasks.db < .pm/schema.sql
 
 | Component | Description | Priority |
 |-----------|-------------|----------|
+| **SQLite Schema** | `.pm/schema.sql` file defining tasks table, dependencies, views | High |
 | **Storybook Visual Workflow** | Screenshot-based visual iteration for UI components | High |
 | **Playwright Screenshot Scripts** | Automated visual capture for debugging | High |
-| **Stack-Specific Patterns** | Zustand, TanStack Query, shadcn patterns | Medium |
+| **Stack-Specific Patterns** | Zustand, TanStack Query, shadcn patterns (project-specific) | Medium |
 | **Terminal Configuration** | Keybindings for 10-window parallel workflow | Low |
 
 ### Adaptation Questions
