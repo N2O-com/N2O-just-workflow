@@ -1,0 +1,13 @@
+# Task database (local working state, regenerated from schema + seeds)
+.pm/tasks.db
+
+# Working memory (transitory scratch files)
+.wm/
+
+# OS files
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
