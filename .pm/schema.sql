@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     type TEXT,                          -- database, actions, frontend, infra, agent, e2e, docs
     owner TEXT,                         -- Engineer assigned
     skills TEXT,                        -- Comma-separated skills to invoke
+
+    -- Audit tracking
     pattern_audited BOOLEAN DEFAULT 0,  -- Dev agent audited patterns after implementation
     pattern_audit_notes TEXT,           -- What patterns were found/documented
     skills_updated BOOLEAN DEFAULT 0,   -- Dev agent updated relevant skills
@@ -25,9 +27,24 @@ CREATE TABLE IF NOT EXISTS tasks (
     tests_pass BOOLEAN DEFAULT 0,       -- All tests passing
     testing_posture TEXT,               -- Grade: A, B, C, D, F (target: A)
     verified BOOLEAN DEFAULT 0,         -- PM verified task completion
+
+    -- Velocity tracking (auto-populated by triggers)
+    started_at DATETIME,                -- Auto-set when status changes from 'pending'
+    completed_at DATETIME,              -- Auto-set when status changes to 'green'
+
+    -- Git tracking (set by commit-task.sh script)
+    commit_hash TEXT,                   -- Git commit hash after task completion
+
+    -- Timestamps
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (sprint, task_num)
+
+    PRIMARY KEY (sprint, task_num),
+
+    -- Data integrity constraints
+    CHECK (status IN ('pending', 'red', 'green', 'blocked')),
+    CHECK (type IS NULL OR type IN ('database', 'actions', 'frontend', 'infra', 'agent', 'e2e', 'docs')),
+    CHECK (testing_posture IS NULL OR testing_posture IN ('A', 'B', 'C', 'D', 'F'))
 );
 
 -- Task dependencies table
@@ -102,6 +119,32 @@ FROM tasks
 WHERE skills_update_notes IS NOT NULL
   AND skills_update_notes != '';
 
+-- Velocity report: Task completion times
+CREATE VIEW IF NOT EXISTS velocity_report AS
+SELECT
+    sprint,
+    task_num,
+    title,
+    started_at,
+    completed_at,
+    ROUND((julianday(completed_at) - julianday(started_at)) * 24, 1) as hours_to_complete
+FROM tasks
+WHERE started_at IS NOT NULL
+  AND completed_at IS NOT NULL
+ORDER BY sprint, task_num;
+
+-- Sprint velocity: Average completion time per sprint
+CREATE VIEW IF NOT EXISTS sprint_velocity AS
+SELECT
+    sprint,
+    COUNT(*) as completed_tasks,
+    ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24), 1) as avg_hours_per_task,
+    ROUND(SUM((julianday(completed_at) - julianday(started_at)) * 24), 1) as total_hours
+FROM tasks
+WHERE started_at IS NOT NULL
+  AND completed_at IS NOT NULL
+GROUP BY sprint;
+
 -- =============================================================================
 -- INDEXES
 -- =============================================================================
@@ -120,5 +163,25 @@ CREATE TRIGGER IF NOT EXISTS update_task_timestamp
 AFTER UPDATE ON tasks
 BEGIN
     UPDATE tasks SET updated_at = CURRENT_TIMESTAMP
+    WHERE sprint = NEW.sprint AND task_num = NEW.task_num;
+END;
+
+-- Auto-set started_at when task leaves 'pending' status
+-- This captures when work actually began on the task
+CREATE TRIGGER IF NOT EXISTS set_started_at
+AFTER UPDATE OF status ON tasks
+WHEN OLD.status = 'pending' AND NEW.status != 'pending' AND OLD.started_at IS NULL
+BEGIN
+    UPDATE tasks SET started_at = CURRENT_TIMESTAMP
+    WHERE sprint = NEW.sprint AND task_num = NEW.task_num;
+END;
+
+-- Auto-set completed_at when task reaches 'green' status
+-- This captures when the task was successfully completed
+CREATE TRIGGER IF NOT EXISTS set_completed_at
+AFTER UPDATE OF status ON tasks
+WHEN NEW.status = 'green' AND OLD.status != 'green'
+BEGIN
+    UPDATE tasks SET completed_at = CURRENT_TIMESTAMP
     WHERE sprint = NEW.sprint AND task_num = NEW.task_num;
 END;
