@@ -23,7 +23,8 @@ the expected format. When you run `/pm-agent`, it creates new sprint folders
 here automatically.
 
 ## Common Commands
-```bash
+
+\`\`\`bash
 # Initialize database
 sqlite3 .pm/tasks.db < .pm/schema.sql
 
@@ -38,7 +39,7 @@ sqlite3 .pm/tasks.db "SELECT * FROM sprint_progress;"
 
 # Reset database
 rm .pm/tasks.db && sqlite3 .pm/tasks.db < .pm/schema.sql
-```
+\`\`\`
 
 ## Schema Overview
 
