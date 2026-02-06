@@ -24,17 +24,24 @@ through a shared SQLite task database. Achieves 4-5x productivity gains — see
 | [`specs/`](./specs/) | Product specifications |
 
 ## Quick Start
+
+**1. Create directories**
 ```bash
-# 1. Create directories
 mkdir -p .pm/todo .wm
+```
 
-# 2. Initialize task database
+**2. Initialize task database**
+```bash
 sqlite3 .pm/tasks.db < .pm/schema.sql
+```
 
-# 3. Start planning
+**3. Start planning**
+```bash
 /pm-agent create a spec for [your feature]
+```
 
-# 4. Start implementing
+**4. Start implementing**
+```bash
 /tdd-agent
 ```
 
