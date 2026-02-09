@@ -62,11 +62,13 @@ CREATE TABLE IF NOT EXISTS task_dependencies (
 -- VIEWS
 -- =============================================================================
 
--- Available tasks: Pending tasks with no unfinished dependencies
-CREATE VIEW IF NOT EXISTS available_tasks AS
+-- Available tasks: Pending tasks with no unfinished dependencies AND not claimed
+DROP VIEW IF EXISTS available_tasks;
+CREATE VIEW available_tasks AS
 SELECT t.*
 FROM tasks t
 WHERE t.status = 'pending'
+  AND t.owner IS NULL
   AND NOT EXISTS (
     SELECT 1
     FROM task_dependencies d
