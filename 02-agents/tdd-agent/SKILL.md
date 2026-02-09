@@ -134,17 +134,24 @@ Do NOT silently skip phases. The user should always know where you are in the wo
 Query available tasks with no pending dependencies:
 
 ```bash
-sqlite3 .pm/tasks.db "SELECT id, title, done_when FROM available_tasks WHERE sprint = 'SPRINT_NAME';"
+sqlite3 .pm/tasks.db "SELECT sprint, task_num, title, done_when FROM available_tasks WHERE sprint = 'SPRINT_NAME';"
 ```
 
 **Selection criteria**:
 - No unfinished dependencies (task only appears in `available_tasks` if dependencies are done)
 - Status = 'pending'
+- Not claimed by another agent (`owner IS NULL`)
 - Clear "Done When" criteria
 
-**Choose a task** that matches your context or is next in the natural sequence.
+**Claim the task** before starting work (atomic — only one agent succeeds):
 
-**If no tasks available**: Either all tasks are blocked, or sprint is complete. Report to planning agent.
+```bash
+sqlite3 .pm/tasks.db "UPDATE tasks SET owner = 'tab-ID' WHERE sprint = 'SPRINT_NAME' AND task_num = TASK_NUM AND status = 'pending' AND owner IS NULL; SELECT changes();"
+```
+
+If `changes()` returns `0`, another agent already claimed it. Pick a different task.
+
+**If no tasks available**: Either all tasks are blocked/claimed, or sprint is complete. Report to planning agent.
 
 ---
 
