@@ -1,320 +1,55 @@
 # N2O AI Development Workflows
 
-**A core competency that N2O is investing tens of thousands of hours into developing.**
+A multi-agent development system that coordinates planning, implementation, and debugging
+through a shared SQLite task database. Achieves 4-5x productivity gains — see
+[BENEFITS.md](./BENEFITS.md) for why N2O is investing in this.
 
-This repository contains our systematized AI-powered development workflow, derived from proven methodologies that achieve **4-5x developer productivity gains** at a cost of **$400/month**.
+## The Three Agents
 
----
-
-## Why This Matters
-
-### Strategic Value for N2O
-
-1. **Compounding returns across the organization.** A 10% efficiency gain compounds across every engineer, every project, every sprint. We can push workflow improvements quickly across our entire team.
-
-2. **$50k+ of value to every Cannon on Day 1.** We hand new engineers this system and make them 2x+ more effective per hour. They show up to their first engagement outperforming peers. Winners win. Better outcomes reflect on N2O and attract more talent.
-
-3. **Customer-facing asset.** Lead magnet, expertise demonstration, potential consulting offering. Shows we're not another body shop—we have institutional knowledge about 4-5x developer output.
-
-### The Core Insight
-
-> "If Claude makes any decision as a developer, I want to know what decision it is. And I want 95% of those decisions to already be documented in the codebase. And wherever it makes those 5% of other decisions due to a new application, I want to review what decision it made and document it for the future."
-
-This is **context management at scale**. Every pattern documented means less time debugging, less time reviewing, and more time shipping.
-
----
-
-## Repository Contents
-
-### Core Agent Skills
-
-| Skill | Purpose | Status |
+| Agent | Purpose | Invoke |
 |-------|---------|--------|
-| **pm-agent** | Sprint planning, spec writing, task breakdown into SQLite | Complete |
-| **tdd-agent** | Test-driven implementation with 3-subagent auditing | Complete |
-| **bug-workflow** | Root cause investigation with browser debugging | Complete |
+| **pm-agent** | Sprint planning, spec writing, task breakdown | `/pm-agent` |
+| **tdd-agent** | TDD implementation with automated auditing | `/tdd-agent` |
+| **bug-workflow** | Root cause investigation and debugging | `/bug-workflow` |
 
-### Supporting Skills
+## Repository Structure
 
-| Skill | Purpose | Status |
-|-------|---------|--------|
-| **react-best-practices** | 50+ React/Next.js performance patterns | Complete |
-| **web-design-guidelines** | UI/UX standards and component patterns | Complete |
+| Directory | What's in it |
+|-----------|-------------|
+| [`01-getting-started/`](./01-getting-started/) | Overview, workflow, quickstart, setup |
+| [`02-agents/`](./02-agents/) | Agent skill definitions (pm, tdd, bug) |
+| [`03-patterns/`](./03-patterns/) | Coding standards (React, web design) |
+| [`scripts/`](./scripts/) | Git commit automation |
+| [`.pm/`](./.pm/) | SQLite schema, sprint specs, task seeds |
+| [`specs/`](./specs/) | Product specifications |
 
----
+## Quick Start
 
-## How It Works
-
-### The Three-Agent System
-
-```
-pm-agent:     spec → tasks (planning)
-tdd-agent:    task → code  (implementation)
-bug-workflow: bug  → task  (debugging)
-```
-
-### Sprint Cycle (~2 days)
-
-1. **Planning Phase** (few hours)
-   - Create sprint folder with 5-10 spec files
-   - Break specs into atomic tasks (4-10 per spec)
-   - Load tasks into SQLite with dependency graph
-   - ~8 unblocked tasks available at any time
-
-2. **Implementation Phase** (few hours)
-   - Open 8-10 terminal windows in parallel
-   - Each window runs TDD workflow: RED → GREEN → REFACTOR → AUDIT → COMMIT
-   - 3 concurrent subagents audit each task (Pattern Compliance, Gap Analysis, Testing Posture)
-   - New patterns flagged for review, then codified into skills
-
-3. **Verification Phase** (few hours)
-   - E2E tests run in background
-   - Code review via pattern recognition (not line-by-line)
-   - Visual QA via Storybook screenshots
-   - Sprint completion report
-
-### Key Innovations
-
-**SQLite Task Database** — Tasks stored in queryable database instead of markdown checklists. Saves context, enables parallel execution, tracks dependencies.
-
-**Progressive Disclosure** — Skills organized in folders of 4-10 markdown files. Claude chooses which to invoke based on the problem. Only relevant context loaded.
-
-**3-Subagent Auditing** — Every task audited by parallel Sonnet subagents checking patterns, gaps, and test quality. Can't commit without passing audit.
-
-**Pattern Codification** — New patterns discovered during implementation are reviewed and added to skills. Knowledge compounds over time.
-
-**Automatic Velocity Tracking** — The database automatically tracks when tasks start and complete, enabling velocity analysis with zero agent overhead.
-
----
-
-## Automatic Tracking (Zero Overhead)
-
-The schema includes features that track data automatically via SQLite triggers, requiring no extra work from agents or engineers:
-
-### Velocity Tracking
-
-| Field | How it's set | Purpose |
-|-------|--------------|---------|
-| `started_at` | **Trigger**: Auto-set when status changes from 'pending' | When work began |
-| `completed_at` | **Trigger**: Auto-set when status changes to 'green' | When work finished |
-
-This enables velocity queries without any manual tracking:
-
-```sql
--- Average hours per task this sprint
-SELECT * FROM sprint_velocity WHERE sprint = 'auth-sprint';
-
--- Individual task times
-SELECT task_num, title, hours_to_complete FROM velocity_report;
-```
-
-### Git Traceability
-
-| Field | How it's set | Purpose |
-|-------|--------------|---------|
-| `commit_hash` | **Script**: Set by `./scripts/git/commit-task.sh` | Links task → git commit |
-
-The commit script handles this automatically:
-
+**1. Create directories**
 ```bash
-# Stage your changes, then:
-./scripts/git/commit-task.sh auth-sprint 5
-
-# This:
-# 1. Looks up task title from tasks.db
-# 2. Creates conventional commit: "feat(auth-sprint): Create login form (Task #5)"
-# 3. Records commit hash back in tasks.db
+mkdir -p .pm/todo .wm
 ```
 
-### Data Integrity
-
-CHECK constraints prevent invalid data:
-- `status` must be: pending, red, green, blocked
-- `type` must be: database, actions, frontend, infra, agent, e2e, docs
-- `testing_posture` must be: A, B, C, D, F
-
-**Why automatic?** Adding columns that agents must manually update creates overhead and drift. Triggers and scripts ensure data is captured consistently without adding instructions to skill files.
-
----
-
-## Cost Model
-
-| Metric | Value |
-|--------|-------|
-| Monthly cost | $400 (2x Claude Max subscriptions) |
-| Productivity gain | 4-5x vs. pre-LLM baseline |
-| Subscription vs API savings | 5x cheaper |
-| Sprint cycle | ~2 days |
-
-> "If you pay for $200 a month plan, that's equivalent to $1,000 of API."
-
----
-
-## Getting Started
-
-See [QUICKSTART.md](./QUICKSTART.md) for invocation patterns.
-
-See [WORKFLOW.md](./WORKFLOW.md) for the complete workflow overview.
-
-### Prerequisites
-
-1. **Claude Max subscription** ($200/month recommended)
-2. **Terminal with tabs** (iTerm2, Windows Terminal)
-3. **SQLite** (for task database)
-
-### First Sprint
-
+**2. Initialize task database**
 ```bash
-# 1. Create directories
-mkdir -p .pm/todo
-mkdir -p .wm
-
-# 2. Initialize task database
 sqlite3 .pm/tasks.db < .pm/schema.sql
+```
 
-# 3. Start planning
+**3. Start planning**
+```bash
 /pm-agent create a spec for [your feature]
+```
 
-# 4. Start implementing
+**4. Start implementing**
+```bash
 /tdd-agent
 ```
 
----
+See [`01-getting-started/`](./01-getting-started/) for detailed setup and workflow guides.
 
-## Gaps & Roadmap
+## For AI Agents
 
-### Currently Missing
-
-| Component | Description | Priority |
-|-----------|-------------|----------|
-| **Storybook Visual Workflow** | Screenshot-based visual iteration for UI components | High |
-| **Playwright Screenshot Scripts** | Automated visual capture for debugging | High |
-| **Stack-Specific Patterns** | Zustand, TanStack Query, shadcn patterns (project-specific) | Medium |
-| **Terminal Configuration** | Keybindings for 10-window parallel workflow | Low |
-
-### Adaptation Questions
-
-- How do we adapt for multi-engineer teams? (pattern sharing, conflict avoidance)
-- How do we handle different tech stacks? (separate pattern docs per stack)
-- What's the onboarding path for a new engineer? (learning curve)
-
----
-
-## Architecture
-
-```
-skills/
-├── pm-agent/                 # Planning agent
-│   ├── SKILL.md              # Main workflow (1000+ lines)
-│   └── templates/            # Spec and report templates
-├── tdd-agent/                # Implementation agent
-│   ├── SKILL.md              # TDD workflow (1200+ lines)
-│   ├── codify/               # Pattern codification rules
-│   ├── subagent-prompts/     # Audit subagent prompts
-│   └── templates/            # Completion report templates
-├── bug-workflow/             # Debugging agent
-│   ├── SKILL.md              # Investigation workflow
-│   ├── debugging/            # Debug techniques by type
-│   ├── building/             # Environment setup
-│   └── testing/              # Verification patterns
-├── react-best-practices/     # React/Next.js patterns
-│   ├── SKILL.md              # Pattern index
-│   └── rules/                # 50+ individual patterns
-└── web-design-guidelines/    # UI/UX standards
-    └── SKILL.md
-```
-
-### Design Principles
-
-1. **Progressive Disclosure** — Only load context when needed. Skills are 4-10 files each, not monolithic documents.
-
-2. **Database-Driven** — Task state in SQLite, not markdown. Enables queries, parallel work, no merge conflicts.
-
-3. **Audit-Gated** — Can't commit without A-grade testing posture. Quality enforced by subagents, not discipline.
-
-4. **Pattern Compounding** — Every sprint adds 5-10 patterns to skills. Knowledge compounds over time.
-
----
-
-## When to Create a New Pattern
-
-> "If Claude makes any decision as a developer, I want to know what decision it is. And I want 95% of those decisions to already be documented in the codebase."
-
-A typical app has **50-250 patterns**. Not more, even in a large codebase. You should understand all of them.
-
-### Codify When:
-
-| Criteria | Example |
-|----------|---------|
-| **Reusable** (3+ future tasks) | "Mock TanStack Query hooks in component tests" |
-| **Non-obvious** | "Test React Server Components with async data" |
-| **Framework-specific** | "Zustand store with localStorage persistence" |
-| **Architectural** | "RLS policy pattern for company-scoped data" |
-| **Error-prone** | Common gotchas others will hit |
-
-### Do NOT Codify When:
-
-| Criteria | Example |
-|----------|---------|
-| **One-off** | Specific to single feature |
-| **Trivial** | "Use ESLint", "add error handling" |
-| **Library docs** | "PapaParse has a streaming mode" |
-| **Too specific** | "Escape pipes in markdown tables for CSV preview" |
-| **Implementation detail** | Business logic, not reusable pattern |
-
-### Pattern Format (10-30 lines max)
-
-```markdown
-### [Pattern Name] (Task #ID)
-
-**Problem**: What problem does this solve?
-
-**Solution**: Brief explanation
-
-**Pattern**:
-\`\`\`typescript
-// One clear example
-\`\`\`
-
-**When to use**: Conditions/scenarios
-```
-
-> **Rule of thumb**: If you debate whether to codify for >1 minute, skip it. Truly valuable patterns are obvious.
-
-**Full documentation**: See `skills/tdd-agent/codify/antipatterns.md` for detailed examples of what NOT to document.
-
----
-
-## Contributing
-
-This is a core competency. We are investing heavily in improving these workflows.
-
-### Adding Patterns
-
-When you discover a reusable pattern during implementation:
-
-1. Apply the criteria above (reusable, non-obvious, framework-specific)
-2. Add to the appropriate skill file (10-30 lines per pattern)
-3. Include: Problem, Solution, When to Use, Example
-
-### Improving Workflows
-
-When you find friction in the workflow:
-
-1. Document the issue in `.wm/`
-2. Propose a change to the relevant SKILL.md
-3. Test the change over 2-3 sprints
-4. Merge if it improves velocity
-
----
-
-## References
-
-- [CLAUDE.md](./CLAUDE.md) — Instructions for AI agents working in this repo
-- [QUICKSTART.md](./QUICKSTART.md) — How to invoke each agent
-- [WORKFLOW.md](./WORKFLOW.md) — Complete workflow overview
-
----
+See [CLAUDE.md](./CLAUDE.md) for agent instructions.
 
 ## License
 
