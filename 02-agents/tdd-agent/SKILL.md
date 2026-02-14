@@ -143,10 +143,12 @@ sqlite3 .pm/tasks.db "SELECT sprint, task_num, title, done_when FROM available_t
 - Not claimed by another agent (`owner IS NULL`)
 - Clear "Done When" criteria
 
-**Claim the task** before starting work (atomic — only one agent succeeds):
+**Claim the task** before starting work (atomic — only one agent succeeds).
+
+Use a developer name from the `developers` table when available, otherwise use the terminal/tab ID:
 
 ```bash
-sqlite3 .pm/tasks.db "UPDATE tasks SET owner = 'tab-ID' WHERE sprint = 'SPRINT_NAME' AND task_num = TASK_NUM AND status = 'pending' AND owner IS NULL; SELECT changes();"
+sqlite3 .pm/tasks.db "UPDATE tasks SET owner = 'developer-name' WHERE sprint = 'SPRINT_NAME' AND task_num = TASK_NUM AND status = 'pending' AND owner IS NULL; SELECT changes();"
 ```
 
 If `changes()` returns `0`, another agent already claimed it. Pick a different task.
