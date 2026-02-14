@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Git tracking (set by commit-task.sh script)
     commit_hash TEXT,                   -- Git commit hash after task completion
 
+    -- External PM tool sync (Linear, Asana, Jira, etc.)
+    external_id TEXT,                   -- Linear issue ID, Asana task ID, etc.
+    external_url TEXT,                  -- Link to task in PM tool
+    last_synced_at DATETIME,            -- When this task was last synced
+
     -- Timestamps
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
