@@ -19,6 +19,17 @@ This skill guides the feature-to-tasks lifecycle:
 
 **Key principle**: PM plans and orchestrates, implementation uses `tdd-agent`.
 
+### Linear Integration (Optional)
+
+If the project has a `.mcp.json` with Linear configured, the PM agent can use Linear MCP for planning:
+
+**Reading** — browse backlog, check current cycle, read stakeholder comments, view cross-project dependencies
+**Writing** — create issues, set assignees/priorities/labels, add blocking relations, post spec summaries
+
+Linear is for human visibility. Agents still execute against local SQLite. The sync script (`./scripts/sync/sync.sh`) bridges the two — pushing claim/complete/blocked updates to Linear automatically.
+
+To set up: `claude mcp add --transport sse linear-server https://mcp.linear.app/sse`
+
 ### Phases (Planning Agent Only)
 
 | Phase | Name | Key Action |
