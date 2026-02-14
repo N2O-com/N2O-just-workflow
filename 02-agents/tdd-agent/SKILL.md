@@ -153,6 +153,11 @@ sqlite3 .pm/tasks.db "UPDATE tasks SET owner = 'developer-name' WHERE sprint = '
 
 If `changes()` returns `0`, another agent already claimed it. Pick a different task.
 
+**Sync to PM tool** (if configured):
+```bash
+./scripts/sync/sync.sh claim $SPRINT $TASK_NUM
+```
+
 **If no tasks available**: Either all tasks are blocked/claimed, or sprint is complete. Report to planning agent.
 
 ---
@@ -808,6 +813,11 @@ After FIX AUDIT achieves A grade and CODIFY report is ready:
 ./scripts/git/commit-task.sh TASK_ID
 ```
 
+**Sync completion to PM tool** (if configured):
+```bash
+./scripts/sync/sync.sh complete $SPRINT $TASK_NUM
+```
+
 ---
 
 ## Phase 10: FINAL REPORT (Critical)
@@ -1018,6 +1028,7 @@ WHERE id = TASK_ID;"
 
 **Then**:
 - Document blocker clearly in database
+- Sync to PM tool: `./scripts/sync/sync.sh blocked $SPRINT $TASK_NUM`
 - Report blocker to planning agent (they can unblock or adjust dependencies)
 - Move to another available task
 
