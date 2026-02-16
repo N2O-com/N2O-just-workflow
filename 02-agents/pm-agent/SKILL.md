@@ -19,6 +19,17 @@ This skill guides the feature-to-tasks lifecycle:
 
 **Key principle**: PM plans and orchestrates, implementation uses `tdd-agent`.
 
+### Linear Integration (Optional)
+
+If the project has a `.mcp.json` with Linear configured, the PM agent can use Linear MCP for planning:
+
+**Reading** — browse backlog, check current cycle, read stakeholder comments, view cross-project dependencies
+**Writing** — create issues, set assignees/priorities/labels, add blocking relations, post spec summaries
+
+Linear is for human visibility. Agents still execute against local SQLite. The sync script (`./scripts/sync/sync.sh`) bridges the two — pushing claim/complete/blocked updates to Linear automatically.
+
+To set up: `claude mcp add --transport sse linear-server https://mcp.linear.app/sse`
+
 ### Phases (Planning Agent Only)
 
 | Phase | Name | Key Action |
@@ -402,8 +413,9 @@ sqlite3 .pm/tasks.db < .pm/todo/new-sprint/tasks.sql
 
 ```sql
 -- .pm/todo/crm/tasks.sql
-INSERT INTO tasks (sprint, spec, task_num, title, type, owner, skills, done_when, description) VALUES
+INSERT INTO tasks (sprint, spec, task_num, title, type, owner, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('crm-foundation', '01-deals-pipeline.md', 1, 'Create CRM tasks table', 'database', 'adam', 'database',
+  2.0, 'medium', NULL,
   'Migration runs, RLS policies pass pgTap (positive + negative cases)',
   'Build tasks table for human-in-the-loop agent approvals.');
 
@@ -418,6 +430,19 @@ INSERT INTO task_dependencies (sprint, task_num, depends_on_sprint, depends_on_t
 - `type`: Task layer — one of: `database`, `actions`, `frontend`, `infra`, `agent`, `e2e`, `docs`
 - `owner`: Engineer assigned (e.g., `'ada'`, `'adam'`)
 - `skills`: Comma-separated skills to invoke (e.g., `'database'`, `'server-actions, tanstack-hooks'`)
+- `estimated_hours`: PM's time estimate — set at planning time, **never adjusted after work starts**
+- `complexity`: One of `low`, `medium`, `high`, `unknown`. High = wider probability distribution on completion time
+- `complexity_notes`: Why it's complex (e.g., `'unstable API'`, `'heavy cross-service integration'`, `'first time using this library'`). Leave NULL for straightforward tasks
+
+### Estimation Guidelines
+
+**Set `estimated_hours` for every task during planning.** This is the PM's best guess before work starts. Don't adjust after seeing actuals — the whole point is measuring estimation accuracy over time.
+
+**Rules of thumb for `complexity`**:
+- **low** — Repeated pattern, no external dependencies, isolated scope (e.g., "another CRUD endpoint")
+- **medium** — Some integration, well-documented APIs, moderate scope
+- **high** — Unstable APIs, cross-service coordination, novel technology, unclear requirements
+- **unknown** — Genuinely can't assess. Use sparingly — try to classify as low/medium/high first
 
 ### Task Description Standard
 

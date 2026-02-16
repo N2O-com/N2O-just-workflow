@@ -52,12 +52,12 @@ sqlite3 .pm/tasks.db "UPDATE tasks SET status = 'done' WHERE sprint = 'crm-found
 
 ### Before You Start
 
-**Read `CLAUDE.md`** for repo context:
-- Database: Neon database on development branch (connection string in `DATABASE_URL_DEV`)
-- Database access: `psql $DATABASE_URL_DEV` or use Neon SQL Editor at https://console.neon.tech
-- Migration commands: `cd packages/database && pnpm migrate:dev` (or `pnpm --filter @repo/database migrate:dev`)
-- Test commands: Your project's test commands (e.g., `pnpm test`, `pnpm typecheck`)
-- Quality checks: Your project's quality commands (e.g., `pnpm lint`, `pnpm typecheck`)
+**Read `CLAUDE.md`** for repo context, and **read `.pm/config.json`** for project commands:
+- Test command: `$(jq -r '.commands.test' .pm/config.json)`
+- Typecheck command: `$(jq -r '.commands.typecheck' .pm/config.json)`
+- Lint command: `$(jq -r '.commands.lint' .pm/config.json)`
+- Build command: `$(jq -r '.commands.build' .pm/config.json)`
+- Database config: see `database` field in `.pm/config.json` and `CLAUDE.md`
 
 **Don't assume** - verify with actual commands before claiming something works or doesn't work.
 
@@ -134,17 +134,31 @@ Do NOT silently skip phases. The user should always know where you are in the wo
 Query available tasks with no pending dependencies:
 
 ```bash
-sqlite3 .pm/tasks.db "SELECT id, title, done_when FROM available_tasks WHERE sprint = 'SPRINT_NAME';"
+sqlite3 .pm/tasks.db "SELECT sprint, task_num, title, done_when FROM available_tasks WHERE sprint = 'SPRINT_NAME';"
 ```
 
 **Selection criteria**:
 - No unfinished dependencies (task only appears in `available_tasks` if dependencies are done)
 - Status = 'pending'
+- Not claimed by another agent (`owner IS NULL`)
 - Clear "Done When" criteria
 
-**Choose a task** that matches your context or is next in the natural sequence.
+**Claim the task** before starting work (atomic — only one agent succeeds).
 
-**If no tasks available**: Either all tasks are blocked, or sprint is complete. Report to planning agent.
+Use a developer name from the `developers` table when available, otherwise use the terminal/tab ID:
+
+```bash
+sqlite3 .pm/tasks.db "UPDATE tasks SET owner = 'developer-name' WHERE sprint = 'SPRINT_NAME' AND task_num = TASK_NUM AND status = 'pending' AND owner IS NULL; SELECT changes();"
+```
+
+If `changes()` returns `0`, another agent already claimed it. Pick a different task.
+
+**Sync to PM tool** (if configured):
+```bash
+./scripts/sync/sync.sh claim $SPRINT $TASK_NUM
+```
+
+**If no tasks available**: Either all tasks are blocked/claimed, or sprint is complete. Report to planning agent.
 
 ---
 
@@ -461,17 +475,17 @@ Check the relevant skill for patterns:
 
 ### Step 1: Run Quality Checks (Required)
 
-**Always run first**:
+**Always run first** (commands from `.pm/config.json`):
 
 ```bash
-pnpm typecheck:all  # Must pass (zero errors)
-pnpm lint:all       # Must pass (zero warnings)
+$(jq -r '.commands.typecheck' .pm/config.json)  # Must pass (zero errors)
+$(jq -r '.commands.lint' .pm/config.json)        # Must pass (zero warnings)
 ```
 
 **For significant changes**:
 
 ```bash
-pnpm build  # Must succeed
+$(jq -r '.commands.build' .pm/config.json)  # Must succeed
 ```
 
 **If checks fail**: **STOP**. Fix all errors before proceeding to subagent audits.
@@ -799,6 +813,11 @@ After FIX AUDIT achieves A grade and CODIFY report is ready:
 ./scripts/git/commit-task.sh TASK_ID
 ```
 
+**Sync completion to PM tool** (if configured):
+```bash
+./scripts/sync/sync.sh complete $SPRINT $TASK_NUM
+```
+
 ---
 
 ## Phase 10: FINAL REPORT (Critical)
@@ -1009,6 +1028,7 @@ WHERE id = TASK_ID;"
 
 **Then**:
 - Document blocker clearly in database
+- Sync to PM tool: `./scripts/sync/sync.sh blocked $SPRINT $TASK_NUM`
 - Report blocker to planning agent (they can unblock or adjust dependencies)
 - Move to another available task
 
@@ -1106,22 +1126,22 @@ sqlite3 .pm/tasks.db "SELECT id, title, done_when FROM available_tasks WHERE spr
 # - "should parse headers correctly" → REAL! Keep it.
 # Rewrite 2 fake tests to verify behavior instead
 
-pnpm test packages/core  # All fail ✓ (19 real tests, removed 2 fake ones)
+$N2O_TEST_CMD packages/core  # All fail ✓ (19 real tests, removed 2 fake ones)
 sqlite3 .pm/tasks.db "UPDATE tasks SET status = 'red' WHERE id = 1;"
 
 # 3. GREEN: Implement
 # ... write parseCSV function in index.ts
-pnpm test packages/core  # All pass ✓
+$N2O_TEST_CMD packages/core  # All pass ✓
 sqlite3 .pm/tasks.db "UPDATE tasks SET status = 'green' WHERE id = 1;"
 
 # 4. REFACTOR: Clean up
 # ... improve naming, extract constants
-pnpm test packages/core  # Still pass ✓
+$N2O_TEST_CMD packages/core  # Still pass ✓
 
 # 5. AUDIT: Quality checks + 3 subagents
 # Step 1: Quality checks (must pass before subagents)
-pnpm typecheck:all  # Pass ✓
-pnpm lint:all       # Pass ✓
+$N2O_TYPECHECK_CMD  # Pass ✓
+$N2O_LINT_CMD       # Pass ✓
 
 # Step 2: Spin up 3 subagents in parallel
 # ... run parallel audits
