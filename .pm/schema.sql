@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     complexity_notes TEXT,              -- Why (e.g., 'unstable API', 'heavy integration')
     reversions INTEGER DEFAULT 0,       -- Times status went backward (green→red, green→blocked)
 
+    -- Priority and scheduling
+    priority REAL,                      -- Ordering within a sprint. Lower=first. Use midpoints to
+                                        -- insert (1.0, 2.0, 3.0 → insert 1.5 between 1 and 2). NULL=unordered.
+    priority_reason TEXT,               -- Why this ordering (e.g., 'blocks all observability work')
+    assignment_reason TEXT,             -- Why assigned to this person (e.g., 'strongest at bash scripting')
+    horizon TEXT DEFAULT 'active',      -- When to think about this: active, next, later, icebox
+    session_id TEXT,                    -- Claude Code session ID (set when task is claimed)
+
     -- Git tracking (set by commit-task.sh script)
     commit_hash TEXT,                   -- Git commit hash after task completion
 
@@ -56,7 +64,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     CHECK (status IN ('pending', 'red', 'green', 'blocked')),
     CHECK (type IS NULL OR type IN ('database', 'actions', 'frontend', 'infra', 'agent', 'e2e', 'docs')),
     CHECK (testing_posture IS NULL OR testing_posture IN ('A', 'B', 'C', 'D', 'F')),
-    CHECK (complexity IS NULL OR complexity IN ('low', 'medium', 'high', 'unknown'))
+    CHECK (complexity IS NULL OR complexity IN ('low', 'medium', 'high', 'unknown')),
+    CHECK (horizon IS NULL OR horizon IN ('active', 'next', 'later', 'icebox'))
 );
 
 -- Developers table: Developer profiles and skill ratings
@@ -104,6 +113,7 @@ SELECT t.*
 FROM tasks t
 WHERE t.status = 'pending'
   AND t.owner IS NULL
+  AND t.horizon = 'active'
   AND NOT EXISTS (
     SELECT 1
     FROM task_dependencies d
@@ -111,7 +121,8 @@ WHERE t.status = 'pending'
     WHERE d.sprint = t.sprint
       AND d.task_num = t.task_num
       AND dep.status != 'green'
-  );
+  )
+ORDER BY t.priority ASC NULLS LAST;
 
 -- Blocked tasks: Tasks with status = 'blocked'
 CREATE VIEW IF NOT EXISTS blocked_tasks AS
@@ -266,6 +277,122 @@ WHERE owner IS NOT NULL
   AND status = 'green'
 GROUP BY owner;
 
+-- Workflow events: Tool calls, skill invocations, phase transitions, subagent spawns
+-- Populated by JSONL transcript parsing (scripts/collect-transcripts.sh)
+CREATE TABLE IF NOT EXISTS workflow_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    session_id TEXT,
+    sprint TEXT,
+    task_num INTEGER,
+    event_type TEXT NOT NULL,       -- tool_call, subagent_spawn, phase_entered,
+                                    -- task_completed, skill_invoked, session_start, session_end
+    tool_name TEXT,                 -- Read, Edit, Write, Bash, Task, Skill, Glob, Grep...
+    tool_use_id TEXT,               -- Links tool call to its result
+    skill_name TEXT,                -- For Skill tool: which skill was invoked
+    skill_version TEXT,
+    phase TEXT,                     -- RED, GREEN, REFACTOR, AUDIT, etc (from SKILL.md markers)
+    agent_id TEXT,                  -- For subagent events
+    agent_type TEXT,                -- Explore, Plan, Bash, claude-code-guide, etc
+    metadata TEXT,                  -- JSON blob: tool_input, tool_output, token counts, etc
+    FOREIGN KEY (sprint, task_num) REFERENCES tasks(sprint, task_num)
+);
+
+-- Transcripts: Index of Claude Code JSONL session files
+-- Maps sessions to tasks and tracks token usage
+CREATE TABLE IF NOT EXISTS transcripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    parent_session_id TEXT,          -- For subagent transcripts
+    agent_id TEXT,                   -- For subagent transcripts
+    file_path TEXT NOT NULL,         -- Path to the JSONL file on disk
+    file_size_bytes INTEGER,
+    message_count INTEGER,
+    user_message_count INTEGER,
+    assistant_message_count INTEGER,
+    tool_call_count INTEGER,
+    total_input_tokens INTEGER,
+    total_output_tokens INTEGER,
+    model TEXT,
+    started_at DATETIME,
+    ended_at DATETIME,
+    sprint TEXT,
+    task_num INTEGER,
+    FOREIGN KEY (sprint, task_num) REFERENCES tasks(sprint, task_num)
+);
+
+-- Developer learning rate: estimation accuracy trend by sprint
+-- A blow-up ratio approaching 1.0 means improving estimation skills
+CREATE VIEW IF NOT EXISTS developer_learning_rate AS
+SELECT owner, sprint,
+    COUNT(*) as tasks,
+    ROUND(AVG(
+        (julianday(completed_at) - julianday(started_at)) * 24 /
+        NULLIF(estimated_hours, 0)
+    ), 2) as avg_blow_up_ratio
+FROM tasks
+WHERE started_at IS NOT NULL AND completed_at IS NOT NULL
+    AND estimated_hours IS NOT NULL AND owner IS NOT NULL
+GROUP BY owner, sprint;
+
+-- Common audit findings: which developers have the most audit problems, and what kinds
+CREATE VIEW IF NOT EXISTS common_audit_findings AS
+SELECT owner,
+    SUM(CASE WHEN pattern_audit_notes LIKE '%fake test%' THEN 1 ELSE 0 END)
+        as fake_test_incidents,
+    SUM(CASE WHEN pattern_audit_notes LIKE '%violation%' THEN 1 ELSE 0 END)
+        as pattern_violations,
+    SUM(CASE WHEN testing_posture != 'A' THEN 1 ELSE 0 END)
+        as below_a_grade,
+    SUM(reversions) as total_reversions,
+    COUNT(*) as total_tasks
+FROM tasks WHERE pattern_audited = 1 AND owner IS NOT NULL
+GROUP BY owner;
+
+-- Reversion hotspots: which task types and complexities cause the most trouble
+CREATE VIEW IF NOT EXISTS reversion_hotspots AS
+SELECT type, complexity,
+    COUNT(*) as tasks,
+    SUM(reversions) as total_reversions,
+    ROUND(AVG(reversions), 2) as avg_reversions,
+    ROUND(AVG(CASE WHEN testing_posture = 'A' THEN 1.0 ELSE 0.0 END), 2) as a_grade_rate
+FROM tasks WHERE status = 'green' AND owner IS NOT NULL
+GROUP BY type, complexity;
+
+-- Skill usage: how frequently each tool/skill is used across sessions
+CREATE VIEW IF NOT EXISTS skill_usage AS
+SELECT tool_name,
+    COUNT(*) as invocations,
+    COUNT(DISTINCT session_id) as sessions,
+    MIN(timestamp) as first_used,
+    MAX(timestamp) as last_used
+FROM workflow_events
+WHERE event_type = 'tool_call'
+GROUP BY tool_name;
+
+-- Phase timing: how long each TDD phase takes (by diffing consecutive phase_entered events)
+CREATE VIEW IF NOT EXISTS phase_timing AS
+SELECT e1.sprint, e1.task_num, e1.phase,
+    ROUND((julianday(e2.timestamp) - julianday(e1.timestamp)) * 86400) as seconds
+FROM workflow_events e1
+JOIN workflow_events e2 ON e1.sprint = e2.sprint
+    AND e1.task_num = e2.task_num
+    AND e2.id = (
+        SELECT MIN(id) FROM workflow_events
+        WHERE id > e1.id AND sprint = e1.sprint
+            AND task_num = e1.task_num AND event_type = 'phase_entered'
+    )
+WHERE e1.event_type = 'phase_entered';
+
+-- Migration tracking: records which schema migrations have been applied
+CREATE TABLE IF NOT EXISTS _migrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,            -- e.g., '001-add-workflow-events'
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    framework_version TEXT,               -- version that shipped this migration
+    checksum TEXT                          -- SHA256 of migration file contents
+);
+
 -- =============================================================================
 -- INDEXES
 -- =============================================================================
@@ -274,6 +401,11 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_sprint ON tasks(sprint);
 CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner);
 CREATE INDEX IF NOT EXISTS idx_deps_depends_on ON task_dependencies(depends_on_sprint, depends_on_task);
+CREATE INDEX IF NOT EXISTS idx_events_session ON workflow_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_task ON workflow_events(sprint, task_num);
+CREATE INDEX IF NOT EXISTS idx_events_type ON workflow_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id);
+CREATE INDEX IF NOT EXISTS idx_transcripts_task ON transcripts(sprint, task_num);
 
 -- =============================================================================
 -- TRIGGERS

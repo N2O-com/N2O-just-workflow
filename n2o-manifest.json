@@ -4,6 +4,7 @@
     "02-agents/**",
     "03-patterns/**",
     ".pm/schema.sql",
+    ".pm/migrations/**",
     "scripts/**"
   ],
   "project_files": [
@@ -22,6 +23,7 @@
   "directory_structure": [
     ".pm",
     ".pm/todo",
+    ".pm/migrations",
     ".wm",
     ".claude",
     ".claude/skills",
