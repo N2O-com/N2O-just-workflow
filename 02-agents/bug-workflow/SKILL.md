@@ -1,6 +1,6 @@
 ---
 name: bug-workflow
-description: "Investigate bugs and generate tasks for tdd-agent. Reproduce → Investigate → Scope → Hypothesis → Task. Uses database queries, Neon logs, code search to find root cause. Outputs task to tasks.db (sprint: hotfix). Does NOT write tests or fix code. Triggers: found a bug, bug report, manual verification failed, something's broken, investigate this bug, be my debugging partner, help me debug."
+description: "Use when the user reports a bug or needs help investigating unexpected behavior. Triggers: found a bug, bug report, something's broken, this doesn't work, investigate this bug, be my debugging partner, help me debug, manual verification failed, why is this failing, unexpected behavior, regression. Investigates root cause and generates tasks — does NOT write fixes (use tdd-agent for that)."
 ---
 
 # Bug Workflow

@@ -1,6 +1,6 @@
 ---
 name: pm-agent
-description: "Planning agent skill for creating feature specs, breaking them into tasks, and setting up sprints. Use SQLite for task state, markdown for specs. Triggers: create spec, new feature spec, write spec, break down, decompose tasks, task breakdown, sprint planning, plan sprint, pm workflow, project management, planning agent."
+description: "Use when the user wants to plan, scope, or break down work. Triggers: create spec, new feature spec, write spec, break down, decompose tasks, task breakdown, sprint planning, plan sprint, pm workflow, project management, planning agent, scope this feature, what should we build, let's plan, create tasks, load tasks, start a sprint. Use this for planning and orchestration — NOT for implementing code (use tdd-agent for implementation)."
 ---
 
 # PM Agent (Planning Agent)

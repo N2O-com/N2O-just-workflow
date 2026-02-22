@@ -1,6 +1,6 @@
 ---
 name: tdd-agent
-description: "TDD implementation workflow for executing sprint tasks. RED → GREEN → REFACTOR → AUDIT → CODIFY → COMMIT. Triggers: implement task, tdd, test-driven development, task execution, implement feature."
+description: "Use when the user wants to implement sprint tasks using TDD. Triggers: implement task, tdd, test-driven development, task execution, implement feature, start working on task, pick next task, let's implement, build this feature, write tests first, red green refactor. This skill drives the RED → GREEN → REFACTOR → AUDIT → CODIFY → COMMIT cycle. NOT for planning (use pm-agent) or bug investigation (use bug-workflow)."
 ---
 
 # TDD Agent
