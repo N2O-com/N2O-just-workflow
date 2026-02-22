@@ -8,13 +8,13 @@ N2O is a workflow framework for AI-assisted software development. It provides a 
 
 | Goal | Existing Foundation | Maturity |
 |------|-------------------|----------|
-| 1. Seamless Updates | `n2o sync`, backup system, manifest file separation | Partial |
-| 2. Best Tooling Always | Skill trigger descriptions, YAML frontmatter | Minimal |
+| 1. Seamless Updates | `n2o sync`, version pinning, selective sync, changelogs, schema migrations | **Done** |
+| 2. Best Tooling Always | YAML trigger descriptions, CLAUDE.md auto-invocation instructions, config toggles | **Done** |
 | 3. Frictionless Init | `n2o init --interactive`, detect-project skill | Partial |
 | 4. Team Collaboration | SQLite schema with `owner`/`developers`, Linear sync design (change 008) | Design only |
 | 5. Parallelization | Atomic task claiming, staging discipline in tdd-agent | Minimal |
 | 6. Skill Quality | tdd-agent's 3-subagent audit system, CODIFY phase | Minimal |
-| 7. Observability | velocity_report, developer_velocity, estimation_accuracy views, reversion triggers | Partial (schema only) |
+| 7. Observability | `workflow_events` table, `n2o stats` CLI, velocity/estimation views, reversion triggers | **Done** |
 
 ---
 
@@ -61,32 +61,20 @@ N2O is a workflow framework for AI-assisted software development. It provides a 
 
 Push framework updates to users without overriding their setup. Updates should be available but opt-in.
 
-### Current State
+### Current State — COMPLETE
 
-- `n2o sync` overwrites `framework_files` (agents, patterns, schema.sql, scripts) and never touches `project_files` (config.json, schema-extensions.sql, CLAUDE.md, tasks.db).
-- Timestamped backups created in `.n2o-backup/` before every sync.
-- `--dry-run` mode shows what would change. `--all` syncs every registered project.
-- Schema migration prompts the user when schema.sql changes.
-- Manifest (`n2o-manifest.json`) cleanly separates framework vs project ownership.
-- Version pinning field (`n2o_version_pinned`) designed but not yet implemented.
+All Phase 1 items implemented:
 
-### Desired State
+- **Version pinning**: `n2o pin` / `n2o pin <version>` / `n2o pin --unpin`. Sync respects pin unless `--force`.
+- **Selective sync**: `n2o sync --only=agents,patterns,schema,scripts` syncs specific categories.
+- **Readable changelogs**: `n2o release` auto-generates changelog entries from git log. `show_changelog()` displays changes between versions during sync.
+- **Schema migrations**: `n2o migrate status`, `n2o migrate run`, `n2o migrate generate` — automated ALTER TABLE ADD/DROP COLUMN, new table/view/index detection, numbered migration files.
+- **Backups**: Timestamped backups in `.n2o-backup/` before every sync.
+- **Manifest**: `n2o-manifest.json` separates framework vs project file ownership.
 
-- **Version pinning**: Projects pin to a framework version and explicitly upgrade. `n2o sync` respects the pin unless `--force` is passed.
-- **Readable changelogs**: `n2o sync --dry-run` shows a human-readable summary of what changed and why, not just file diffs.
-- **Selective sync**: Sync only skills, only schema, or only scripts (`n2o sync --only=agents`).
-- **Update notifications**: A lightweight mechanism to notify registered projects when a new framework version is available.
-- **Schema migrations**: Automated, non-destructive migrations (ALTER TABLE additions) rather than relying solely on CREATE TABLE IF NOT EXISTS.
+### Remaining (Future)
 
-### Key Considerations
-
-- Current "overwrite framework files" approach works for a small team but risks breaking project customizations as adoption grows.
-- Schema migrations are the hardest part — adding columns is safe, but restructuring requires migration scripts.
-- Git submodules, npm packages, and git subtree were already considered and rejected (change 006). Sync script is the right call for 5-10 projects. Revisit at 20+.
-
-### Priority / Effort
-
-**Near-term refinement.** Most infrastructure exists; needs version pinning, selective sync, and changelog polish. Effort: Medium.
+- **Update notifications**: Lightweight mechanism to notify registered projects when a new framework version is available.
 
 ---
 
@@ -94,30 +82,20 @@ Push framework updates to users without overriding their setup. Updates should b
 
 Use the best tools and patterns automatically without having to think about it. Skills should fire based on context, not manual summoning.
 
-### Current State
+### Current State — COMPLETE
 
-- Skills have trigger descriptions in YAML frontmatter (e.g., bug-workflow triggers on "found a bug", "something's broken").
-- All skills require manual invocation via slash commands (`/pm-agent`, `/tdd-agent`, etc.).
-- tdd-agent has a cross-reference table mapping task types to skills.
-- detect-project auto-triggers when CLAUDE.md has `<!-- UNFILLED -->` markers — proof that context-based triggering works.
-- Pattern skills (react-best-practices, web-design-guidelines) are only consulted when explicitly invoked.
+All auto-invocation infrastructure implemented:
 
-### Desired State
+- **YAML trigger descriptions**: All 6 skills have rich `description` fields with explicit trigger phrases, contextual signals, and negative signals (what NOT to use the skill for).
+- **CLAUDE.md auto-invocation instruction**: Agent instruction block in `templates/CLAUDE.md` tells Claude to auto-invoke skills based on user intent, prefer false positives, and treat pattern skills as ambient.
+- **Pattern skills as ambient**: react-best-practices and web-design-guidelines described as "consult automatically when writing/reviewing relevant code" — passive linters, not explicit invocations.
+- **Config toggles**: `auto_invoke_skills` (boolean) and `disabled_skills` (array) in `.pm/config.json` for suppression.
+- **Multiple skills simultaneously**: CLAUDE.md instruction explicitly supports multiple skills firing at once.
 
-- **Context-based auto-invocation**: When a user says "I found a bug", bug-workflow activates without needing `/bug-workflow`. When someone writes React code, react-best-practices is consulted automatically.
-- **Skill router**: A lightweight routing layer in CLAUDE.md that maps user intent to the right skill. The technology should be invisible — if you have to think about which skill to invoke, the system has failed.
-- **Pattern skills as always-on**: react-best-practices and web-design-guidelines should be ambient during relevant work, not point-in-time audits.
-- **Graceful fallback**: Auto-invocation should never be annoying. If the wrong skill fires, the cost should be near-zero.
+### Remaining (Future)
 
-### Key Considerations
-
-- Claude Code's skill system already supports description-based trigger matching. The question is how reliable this matching is in practice.
-- Over-eager auto-invocation could slow down simple tasks. Need to tune sensitivity.
-- Depends on Goal 6 — skills must actually work well before auto-invoking them at scale.
-
-### Priority / Effort
-
-**Medium-term.** Requires experimentation with Claude Code's skill matching behavior and tuning trigger descriptions. Effort: Medium.
+- **Sensitivity tuning**: Monitor real-world auto-invocation accuracy and adjust trigger descriptions.
+- **Skill quality prerequisite**: Skills must work reliably before aggressive auto-invocation (Goal 6).
 
 ---
 
@@ -258,50 +236,42 @@ Ensure all skills work well. Measure performance. A/B test different versions. S
 
 Track credit usage, Claude activity, skill invocations, conversation transcripts, and reversion frequency.
 
-### Current State
+### Current State — COMPLETE (Phase 1)
 
-- Schema has analytics views: `velocity_report`, `sprint_velocity`, `developer_velocity`, `estimation_accuracy`, `developer_quality`.
-- Triggers auto-track: `started_at`, `completed_at`, `reversions` (increment on backward status changes).
-- `testing_posture` grade and `pattern_audit_notes` capture per-task quality data.
-- `commit_hash` column links tasks to git commits.
-- No credit usage tracking, no Claude activity logging, no skill invocation logging, no conversation transcript capture.
+Core observability infrastructure implemented:
 
-### Desired State
+- **`workflow_events` table**: Records skill invocations, phase transitions, task completions with timestamps, session IDs, and metadata (JSON). Replaces the originally planned `skill_invocations` table with a more general event-sourcing approach.
+- **`n2o stats` CLI**: `n2o stats [--json]` command surfaces sprint progress, velocity, estimation accuracy, and developer quality metrics.
+- **Analytics views**: `velocity_report`, `sprint_velocity`, `developer_velocity`, `estimation_accuracy`, `developer_quality`, `phase_durations`, `session_activity`.
+- **Auto-tracking triggers**: `started_at`, `completed_at`, `reversions` (increment on backward status changes).
+- **Per-task quality**: `testing_posture` grade, `pattern_audit_notes`, `commit_hash`.
 
-- **Skill invocation logging**: A `skill_invocations` table recording timestamp, skill name, task ID (if applicable), duration, and outcome (success/failure/partial). This is the foundation for Goal 6 metrics.
-- **Credit usage tracking**: Track Claude API token consumption per task, per sprint, per developer. Requires integration with Claude's usage reporting (likely parsing session metadata or billing data).
-- **Claude activity logging**: Which tools are called, how many turns per task, conversation length. Helps identify inefficiency patterns (e.g., excessive file reads, repeated failed commands).
-- **Conversation transcripts**: Store full conversation logs for replay, debugging, and training. Need a storage and retention policy — transcripts are large and potentially sensitive.
-- **Reversion dashboard**: Surface the existing `reversions` counter and `developer_quality` view in a queryable format. How often is work being undone? Which task types have the highest reversion rates?
-- **Dashboard integration**: The existing `specs/workflow-dashboard.md` spec covers a web dashboard that could surface all of this data. Observability data feeds the dashboard.
+### Remaining (Future)
 
-### Key Considerations
-
-- Credit/token tracking depends on what Claude Code exposes. May need to parse session logs or hook into Claude Code's reporting.
-- Conversation transcripts are the most storage-intensive item. Consider: store locally per project? Centralize? Summarize instead of full logs?
-- Start with skill invocation logging (simple, high value) and build up to full observability.
-- The existing SQLite views are powerful but require command-line SQL to query. A dashboard or simple CLI reporting command (`n2o stats`) would make this accessible.
+- **Credit usage tracking**: Track Claude API token consumption per task/sprint/developer. Depends on what Claude Code exposes.
+- **Conversation transcripts**: Full conversation logs for replay and debugging. Storage/retention policy needed.
+- **Dashboard integration**: Web dashboard to surface observability data (see `specs/workflow-dashboard.md`).
 
 ### Priority / Effort
 
-**Near-term** for skill invocation table and basic reporting. **Medium-term** for credit tracking and transcripts. Effort: Medium.
+**Future** for credit tracking and transcripts. Phase 1 observability is complete. Effort: Medium.
 
 ---
 
 ## Implementation Phases
 
-### Phase 1 — Foundation (Near-term)
-- **Goal 1**: Version pinning, selective sync, readable changelogs
-- **Goal 3**: E2E test suite for `n2o init`, zero-thought defaults
-- **Goal 7**: `skill_invocations` table, `n2o stats` CLI command
+### Phase 1 — Foundation (COMPLETE)
+- **Goal 1**: ~~Version pinning, selective sync, readable changelogs~~ ✅ + schema migrations
+- **Goal 2**: ~~Skill auto-invocation, context-based routing~~ ✅ (moved from Phase 3)
+- **Goal 7**: ~~`workflow_events` table, `n2o stats` CLI command~~ ✅
 
-### Phase 2 — Multi-User Basics (Medium-term)
+### Phase 2 — Polish & Multi-User Basics (Next)
+- **Goal 3**: E2E test suite for `n2o init`, zero-thought defaults
 - **Goal 4**: Linear sync scripts (implement change 008 design)
 - **Goal 5**: Branch-per-task workflow, conflict detection
 - **Goal 6**: Skill-by-skill audit, define success criteria per skill
 
 ### Phase 3 — Automation (Medium-term)
-- **Goal 2**: Skill auto-invocation, context-based routing
 - **Goal 6**: Skill versioning, basic A/B comparison
 - **Goal 7**: Credit tracking, conversation logging, reversion dashboard
 

@@ -1276,6 +1276,7 @@ cmd_stats() {
         COALESCE(SUM(total_output_tokens), 0) as total_output_tokens
       FROM transcripts;
     " 2>/dev/null || echo "[]")
+    [[ -z "$sessions_json" ]] && sessions_json="[]"
 
     tool_usage_json=$(sqlite3 -json "$db" "
       SELECT tool_name, invocations as calls, sessions
@@ -1283,12 +1284,14 @@ cmd_stats() {
       ORDER BY invocations DESC
       LIMIT 10;
     " 2>/dev/null || echo "[]")
+    [[ -z "$tool_usage_json" ]] && tool_usage_json="[]"
 
     sprint_json=$(sqlite3 -json "$db" "
       SELECT sprint, total_tasks as total, green as done, pending, percent_complete as pct
       FROM sprint_progress
       ORDER BY percent_complete DESC, sprint;
     " 2>/dev/null || echo "[]")
+    [[ -z "$sprint_json" ]] && sprint_json="[]"
 
     available_json=$(sqlite3 -json "$db" "
       SELECT sprint, task_num, title, priority
@@ -1296,6 +1299,35 @@ cmd_stats() {
       ORDER BY priority ASC NULLS LAST
       LIMIT 15;
     " 2>/dev/null || echo "[]")
+    [[ -z "$available_json" ]] && available_json="[]"
+
+    local token_quality_json
+    token_quality_json=$(sqlite3 -json "$db" "
+      SELECT skill_name, sprint, invocations, total_input_tokens, total_output_tokens, avg_tokens_per_call
+      FROM skill_token_usage
+      ORDER BY total_input_tokens + total_output_tokens DESC
+      LIMIT 10;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$token_quality_json" ]] && token_quality_json="[]"
+
+    local precision_json
+    precision_json=$(sqlite3 -json "$db" "
+      SELECT sprint, task_num, files_read, files_modified, exploration_ratio
+      FROM skill_precision
+      WHERE files_read > 0
+      ORDER BY exploration_ratio DESC
+      LIMIT 10;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$precision_json" ]] && precision_json="[]"
+
+    local blowup_json
+    blowup_json=$(sqlite3 -json "$db" "
+      SELECT sprint, task_num, title, type, complexity, estimated_hours, actual_hours, blow_up_ratio
+      FROM blow_up_factors
+      ORDER BY blow_up_ratio DESC
+      LIMIT 5;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$blowup_json" ]] && blowup_json="[]"
 
     # Compose top-level JSON
     jq -n \
@@ -1303,11 +1335,19 @@ cmd_stats() {
       --argjson tools "$tool_usage_json" \
       --argjson sprints "$sprint_json" \
       --argjson available "$available_json" \
+      --argjson token_quality "$token_quality_json" \
+      --argjson precision "$precision_json" \
+      --argjson blowups "$blowup_json" \
       '{
         sessions: ($sessions[0] // {}),
         tool_usage: $tools,
         sprint_progress: $sprints,
-        available_tasks: $available
+        available_tasks: $available,
+        skill_quality: {
+          token_usage: $token_quality,
+          precision: $precision,
+          blow_up_factors: $blowups
+        }
       }'
     return
   fi
@@ -1406,6 +1446,90 @@ cmd_stats() {
     done <<< "$available_data"
   else
     echo -e "  ${GREEN}No pending tasks — all caught up!${NC}"
+  fi
+
+  # === Section 5: Skill Quality ===
+  log_header "Skill Quality"
+
+  # Token usage by tool
+  local token_data
+  token_data=$(sqlite3 -separator '|' "$db" "
+    SELECT skill_name, sprint, invocations, total_input_tokens, total_output_tokens, avg_tokens_per_call
+    FROM skill_token_usage
+    ORDER BY total_input_tokens + total_output_tokens DESC
+    LIMIT 10;
+  " 2>/dev/null || echo "")
+
+  if [[ -n "$token_data" ]]; then
+    printf "  ${BOLD}Token Usage by Tool:${NC}\n"
+    printf "  ${BOLD}%-15s %-18s %8s %12s %12s %10s${NC}\n" "Tool" "Sprint" "Calls" "Input" "Output" "Avg/Call"
+    printf "  %-15s %-18s %8s %12s %12s %10s\n" "---------------" "------------------" "--------" "------------" "------------" "----------"
+    while IFS='|' read -r skill sprint calls inp outp avg; do
+      printf "  %-15s %-18s %8s %12s %12s %10s\n" "${skill:-all}" "$sprint" "$calls" "$(format_number "$inp")" "$(format_number "$outp")" "$(format_number "$avg")"
+    done <<< "$token_data"
+  else
+    echo -e "  ${YELLOW}No token usage data available. Run collect-transcripts.sh --reparse to populate.${NC}"
+  fi
+
+  echo ""
+
+  # Exploration ratio
+  local precision_data
+  precision_data=$(sqlite3 -separator '|' "$db" "
+    SELECT sprint, task_num, files_read, files_modified, exploration_ratio
+    FROM skill_precision
+    WHERE files_read > 0
+    ORDER BY exploration_ratio DESC
+    LIMIT 10;
+  " 2>/dev/null || echo "")
+
+  if [[ -n "$precision_data" ]]; then
+    printf "  ${BOLD}Exploration Ratio (files read vs modified):${NC}\n"
+    printf "  ${BOLD}%-16s %8s %10s %8s${NC}\n" "Sprint/#" "Read" "Modified" "Ratio"
+    printf "  %-16s %8s %10s %8s\n" "----------------" "--------" "----------" "--------"
+    while IFS='|' read -r sprint task_num fread fmod ratio; do
+      local sprint_task="${sprint}/${task_num}"
+      # Color ratio: green if <0.3, yellow if 0.3-0.6, red if >0.6
+      local ratio_color="$GREEN"
+      if [[ -n "$ratio" ]]; then
+        local ratio_int
+        ratio_int=$(echo "$ratio" | awk '{printf "%d", $1 * 100}')
+        if [[ "$ratio_int" -gt 60 ]]; then
+          ratio_color="$RED"
+        elif [[ "$ratio_int" -gt 30 ]]; then
+          ratio_color="$YELLOW"
+        fi
+      fi
+      printf "  %-16s %8s %10s ${ratio_color}%8s${NC}\n" "$sprint_task" "$fread" "$fmod" "$ratio"
+    done <<< "$precision_data"
+  else
+    echo -e "  ${YELLOW}No precision data available. Run collect-transcripts.sh --reparse to populate.${NC}"
+  fi
+
+  echo ""
+
+  # Blow-up factors
+  local blowup_data
+  blowup_data=$(sqlite3 -separator '|' "$db" "
+    SELECT sprint, task_num, title, type, complexity, estimated_hours, actual_hours, blow_up_ratio
+    FROM blow_up_factors
+    ORDER BY blow_up_ratio DESC
+    LIMIT 5;
+  " 2>/dev/null || echo "")
+
+  if [[ -n "$blowup_data" ]]; then
+    printf "  ${BOLD}Blow-Up Factors (actual > 2x estimate):${NC}\n"
+    printf "  ${BOLD}%-16s %-35s %8s %8s %6s${NC}\n" "Sprint/#" "Title" "Est(h)" "Act(h)" "Ratio"
+    printf "  %-16s %-35s %8s %8s %6s\n" "----------------" "-----------------------------------" "--------" "--------" "------"
+    while IFS='|' read -r sprint task_num title type complexity est act ratio; do
+      local sprint_task="${sprint}/${task_num}"
+      if [[ ${#title} -gt 35 ]]; then
+        title="${title:0:32}..."
+      fi
+      printf "  %-16s %-35s %8s %8s ${RED}%5sx${NC}\n" "$sprint_task" "$title" "$est" "$act" "$ratio"
+    done <<< "$blowup_data"
+  else
+    echo -e "  ${YELLOW}No blow-up data available (no tasks exceeded 2x estimate).${NC}"
   fi
 
   echo ""

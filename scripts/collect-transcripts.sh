@@ -9,8 +9,9 @@ set -euo pipefail
 # the transcripts and workflow_events tables in .pm/tasks.db.
 #
 # Usage:
-#   scripts/collect-transcripts.sh          # run from project root
-#   scripts/collect-transcripts.sh --quiet  # suppress progress details
+#   scripts/collect-transcripts.sh            # run from project root
+#   scripts/collect-transcripts.sh --quiet    # suppress progress details
+#   scripts/collect-transcripts.sh --reparse  # delete all data and re-parse from scratch
 # =============================================================================
 
 # Colors (matching n2o CLI)
@@ -26,6 +27,16 @@ log_success() { echo -e "${GREEN}✓${NC}  $1"; }
 log_warn()    { echo -e "${YELLOW}!${NC}  $1"; }
 log_error()   { echo -e "${RED}x${NC}  $1" >&2; }
 log_header()  { echo -e "\n${BOLD}$1${NC}"; }
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+REPARSE=false
+for arg in "$@"; do
+  case "$arg" in
+    --reparse) REPARSE=true ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Dependency check
@@ -71,6 +82,15 @@ log_info "Claude dir: $CLAUDE_DIR"
 log_info "Database: $DB"
 
 # ---------------------------------------------------------------------------
+# Handle --reparse: delete all existing transcript/event data
+# ---------------------------------------------------------------------------
+if [[ "$REPARSE" == "true" ]]; then
+  log_warn "Reparse mode: deleting all existing transcript and event data"
+  sqlite3 "$DB" "DELETE FROM workflow_events; DELETE FROM transcripts;"
+  log_info "Cleared workflow_events and transcripts tables"
+fi
+
+# ---------------------------------------------------------------------------
 # Find all JSONL files
 # ---------------------------------------------------------------------------
 JSONL_FILES=()
@@ -104,11 +124,13 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
     continue
   fi
 
-  # Check if already indexed by file_path
-  existing=$(sqlite3 "$DB" "SELECT COUNT(*) FROM transcripts WHERE file_path = '$(echo "$jsonl_file" | sed "s/'/''/g")';")
-  if [[ "$existing" -gt 0 ]]; then
-    ((SKIP_COUNT++)) || true
-    continue
+  # Check if already indexed by file_path (skip this check during --reparse)
+  if [[ "$REPARSE" != "true" ]]; then
+    existing=$(sqlite3 "$DB" "SELECT COUNT(*) FROM transcripts WHERE file_path = '$(echo "$jsonl_file" | sed "s/'/''/g")';")
+    if [[ "$existing" -gt 0 ]]; then
+      ((SKIP_COUNT++)) || true
+      continue
+    fi
   fi
 
   # Determine if this is a subagent transcript
@@ -169,12 +191,27 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       ended_at: $end_ts,
       tool_calls: [.[] | select(.type == "assistant") |
         .timestamp as $ts |
-        .message.content[]? | select(.type == "tool_use") |
+        .message.usage as $usage |
+        [.message.content[]? | select(.type == "tool_use")] as $all_tools |
+        ($all_tools | length) as $tool_count |
+        $all_tools[] |
         {
           tool_name: .name,
           tool_use_id: .id,
           timestamp: $ts,
-          skill_name: (if .name == "Skill" then (.input.skill // null) else null end)
+          skill_name: (if .name == "Skill" then (.input.skill // null) else null end),
+          input_tokens: ($usage.input_tokens // null),
+          output_tokens: ($usage.output_tokens // null),
+          tool_calls_in_msg: $tool_count,
+          file_path: (
+            if .name == "Read" then (.input.file_path // null)
+            elif .name == "Edit" then (.input.file_path // null)
+            elif .name == "Write" then (.input.file_path // null)
+            elif .name == "Glob" then (.input.pattern // null)
+            elif .name == "Grep" then (.input.path // null)
+            else null end
+          ),
+          is_write: (if .name == "Edit" or .name == "Write" then true else false end)
         }
       ]
     }
@@ -251,6 +288,11 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       tc_tool_use_id=$(echo "$tc" | jq -r '.tool_use_id')
       tc_timestamp=$(echo "$tc" | jq -r '.timestamp // empty')
       tc_skill_name=$(echo "$tc" | jq -r '.skill_name // empty')
+      tc_input_tokens=$(echo "$tc" | jq -r '.input_tokens // empty')
+      tc_output_tokens=$(echo "$tc" | jq -r '.output_tokens // empty')
+      tc_tool_calls_in_msg=$(echo "$tc" | jq -r '.tool_calls_in_msg // empty')
+      tc_file_path=$(echo "$tc" | jq -r '.file_path // empty')
+      tc_is_write=$(echo "$tc" | jq -r 'if .is_write then "true" else "false" end')
 
       # Determine event_type
       if [[ "$tc_tool_name" == "Task" ]]; then
@@ -263,13 +305,27 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       ts_val="CURRENT_TIMESTAMP"; [[ -n "$tc_timestamp" ]] && ts_val="'$tc_timestamp'"
       skill_val="NULL"; [[ -n "$tc_skill_name" ]] && skill_val="'${tc_skill_name//\'/\'\'}'"
       evt_agent_val="NULL"; [[ -n "$agent_id" ]] && evt_agent_val="'$sql_agent'"
+      input_tokens_val="NULL"; [[ -n "$tc_input_tokens" ]] && input_tokens_val="$tc_input_tokens"
+      output_tokens_val="NULL"; [[ -n "$tc_output_tokens" ]] && output_tokens_val="$tc_output_tokens"
+      tool_calls_in_msg_val="NULL"; [[ -n "$tc_tool_calls_in_msg" ]] && tool_calls_in_msg_val="$tc_tool_calls_in_msg"
+
+      # Build metadata JSON with file_path and is_write
+      if [[ -n "$tc_file_path" ]]; then
+        metadata_val="'{\"file_path\": \"${tc_file_path//\"/\\\"}\", \"is_write\": ${tc_is_write}}'"
+      elif [[ "$tc_is_write" == "true" ]]; then
+        metadata_val="'{\"file_path\": null, \"is_write\": true}'"
+      else
+        metadata_val="NULL"
+      fi
 
       sql_batch+="INSERT INTO workflow_events (
-  timestamp, session_id, event_type, tool_name, tool_use_id, skill_name, agent_id
+  timestamp, session_id, event_type, tool_name, tool_use_id, skill_name, agent_id,
+  input_tokens, output_tokens, tool_calls_in_msg, metadata
 ) VALUES (
   $ts_val, '$sql_session_id', '$event_type',
   '${tc_tool_name//\'/\'\'}', '${tc_tool_use_id//\'/\'\'}',
-  $skill_val, $evt_agent_val
+  $skill_val, $evt_agent_val,
+  $input_tokens_val, $output_tokens_val, $tool_calls_in_msg_val, $metadata_val
 );"
     done <<< "$tool_calls_json"
 

@@ -294,6 +294,9 @@ CREATE TABLE IF NOT EXISTS workflow_events (
     phase TEXT,                     -- RED, GREEN, REFACTOR, AUDIT, etc (from SKILL.md markers)
     agent_id TEXT,                  -- For subagent events
     agent_type TEXT,                -- Explore, Plan, Bash, claude-code-guide, etc
+    input_tokens INTEGER,            -- Tokens in context window for this assistant turn
+    output_tokens INTEGER,           -- Tokens generated in this turn's response
+    tool_calls_in_msg INTEGER,       -- How many tool calls shared these token counts
     metadata TEXT,                  -- JSON blob: tool_input, tool_output, token counts, etc
     FOREIGN KEY (sprint, task_num) REFERENCES tasks(sprint, task_num)
 );
@@ -384,6 +387,103 @@ JOIN workflow_events e2 ON e1.sprint = e2.sprint
     )
 WHERE e1.event_type = 'phase_entered';
 
+-- Skill token usage: Per-skill token totals and averages by sprint
+DROP VIEW IF EXISTS skill_token_usage;
+CREATE VIEW IF NOT EXISTS skill_token_usage AS
+SELECT
+    skill_name,
+    sprint,
+    COUNT(*) as invocations,
+    COALESCE(SUM(input_tokens / NULLIF(tool_calls_in_msg, 0)), 0) as total_input_tokens,
+    COALESCE(SUM(output_tokens / NULLIF(tool_calls_in_msg, 0)), 0) as total_output_tokens,
+    ROUND(AVG((input_tokens + output_tokens) / NULLIF(tool_calls_in_msg, 0)), 0) as avg_tokens_per_call
+FROM workflow_events
+WHERE event_type = 'tool_call' AND input_tokens IS NOT NULL
+GROUP BY skill_name, sprint;
+
+-- Skill duration: Duration per skill invocation
+DROP VIEW IF EXISTS skill_duration;
+CREATE VIEW IF NOT EXISTS skill_duration AS
+SELECT
+    e1.skill_name,
+    e1.sprint,
+    e1.task_num,
+    ROUND((julianday(e2.timestamp) - julianday(e1.timestamp)) * 86400) as seconds
+FROM workflow_events e1
+JOIN workflow_events e2
+    ON e1.sprint = e2.sprint AND e1.task_num = e2.task_num
+    AND e2.event_type = 'task_completed' AND e2.skill_name = e1.skill_name
+WHERE e1.event_type = 'skill_invoked';
+
+-- Skill precision: Files read vs modified per task, exploration ratio
+DROP VIEW IF EXISTS skill_precision;
+CREATE VIEW IF NOT EXISTS skill_precision AS
+SELECT
+    we.sprint,
+    we.task_num,
+    COUNT(DISTINCT CASE WHEN we.tool_name IN ('Read', 'Glob', 'Grep')
+        THEN json_extract(we.metadata, '$.file_path') END) as files_read,
+    COUNT(DISTINCT CASE WHEN we.tool_name IN ('Edit', 'Write')
+        THEN json_extract(we.metadata, '$.file_path') END) as files_modified,
+    CASE
+        WHEN COUNT(DISTINCT CASE WHEN we.tool_name IN ('Read', 'Glob', 'Grep')
+            THEN json_extract(we.metadata, '$.file_path') END) > 0
+        THEN ROUND(1.0 - (
+            1.0 * COUNT(DISTINCT CASE WHEN we.tool_name IN ('Edit', 'Write')
+                THEN json_extract(we.metadata, '$.file_path') END) /
+            COUNT(DISTINCT CASE WHEN we.tool_name IN ('Read', 'Glob', 'Grep')
+                THEN json_extract(we.metadata, '$.file_path') END)
+        ), 2)
+        ELSE NULL
+    END as exploration_ratio
+FROM workflow_events we
+WHERE we.event_type = 'tool_call'
+GROUP BY we.sprint, we.task_num;
+
+-- Phase time distribution: Phase duration as % of total task time
+DROP VIEW IF EXISTS phase_time_distribution;
+CREATE VIEW IF NOT EXISTS phase_time_distribution AS
+SELECT
+    pt.sprint,
+    pt.task_num,
+    pt.phase,
+    pt.seconds,
+    ROUND(100.0 * pt.seconds / SUM(pt.seconds) OVER (PARTITION BY pt.sprint, pt.task_num), 1) as pct_of_total
+FROM phase_timing pt;
+
+-- Token efficiency trend: Avg tokens per task by sprint and complexity
+DROP VIEW IF EXISTS token_efficiency_trend;
+CREATE VIEW IF NOT EXISTS token_efficiency_trend AS
+SELECT
+    t.sprint,
+    t.complexity,
+    COUNT(*) as tasks,
+    ROUND(AVG(tr.total_input_tokens + tr.total_output_tokens)) as avg_tokens_per_task
+FROM tasks t
+JOIN transcripts tr ON tr.sprint = t.sprint AND tr.task_num = t.task_num
+WHERE t.status = 'green'
+GROUP BY t.sprint, t.complexity;
+
+-- Blow-up factors: Tasks where actual > 2x estimated
+DROP VIEW IF EXISTS blow_up_factors;
+CREATE VIEW IF NOT EXISTS blow_up_factors AS
+SELECT
+    sprint,
+    task_num,
+    title,
+    type,
+    complexity,
+    estimated_hours,
+    ROUND((julianday(completed_at) - julianday(started_at)) * 24, 1) as actual_hours,
+    ROUND((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0), 1) as blow_up_ratio,
+    reversions,
+    testing_posture
+FROM tasks
+WHERE started_at IS NOT NULL
+    AND completed_at IS NOT NULL
+    AND estimated_hours IS NOT NULL
+    AND (julianday(completed_at) - julianday(started_at)) * 24 > estimated_hours * 2;
+
 -- Migration tracking: records which schema migrations have been applied
 CREATE TABLE IF NOT EXISTS _migrations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -404,6 +504,7 @@ CREATE INDEX IF NOT EXISTS idx_deps_depends_on ON task_dependencies(depends_on_s
 CREATE INDEX IF NOT EXISTS idx_events_session ON workflow_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_task ON workflow_events(sprint, task_num);
 CREATE INDEX IF NOT EXISTS idx_events_type ON workflow_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_skill ON workflow_events(skill_name);
 CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id);
 CREATE INDEX IF NOT EXISTS idx_transcripts_task ON transcripts(sprint, task_num);
 
