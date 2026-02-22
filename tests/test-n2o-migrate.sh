@@ -517,6 +517,374 @@ test_help_shows_migrate_command() {
 }
 
 # -----------------------------------------------------------------------------
+# Task 3 Tests: Migration auto-generation (n2o migrate --generate)
+# -----------------------------------------------------------------------------
+
+test_generate_add_column() {
+  # Create old schema with a table, new schema with an added column
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    priority REAL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  # Init project, then generate migration from diff
+  "$N2O" init "$TEST_DIR"
+
+  local output
+  output=$("$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1)
+
+  # Should produce a migration file
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created a migration file" >&2
+    return 1
+  fi
+
+  # Migration should contain ALTER TABLE ADD COLUMN
+  assert_file_contains "$migration_file" "ALTER TABLE tasks ADD COLUMN priority REAL"
+}
+
+test_generate_drop_column() {
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    old_column TEXT,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  "$N2O" init "$TEST_DIR"
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created a migration file" >&2
+    return 1
+  fi
+
+  assert_file_contains "$migration_file" "ALTER TABLE tasks DROP COLUMN old_column"
+}
+
+test_generate_new_table() {
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+
+CREATE TABLE IF NOT EXISTS _migrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+SQL
+
+  "$N2O" init "$TEST_DIR"
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created a migration file" >&2
+    return 1
+  fi
+
+  assert_file_contains "$migration_file" "CREATE TABLE IF NOT EXISTS _migrations"
+}
+
+test_generate_new_view() {
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    PRIMARY KEY (sprint, task_num)
+);
+
+DROP VIEW IF EXISTS sprint_progress;
+CREATE VIEW sprint_progress AS
+SELECT sprint, COUNT(*) as total_tasks
+FROM tasks
+GROUP BY sprint;
+SQL
+
+  "$N2O" init "$TEST_DIR"
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created a migration file" >&2
+    return 1
+  fi
+
+  assert_file_contains "$migration_file" "DROP VIEW IF EXISTS sprint_progress"
+  assert_file_contains "$migration_file" "CREATE VIEW sprint_progress"
+}
+
+test_generate_new_index() {
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_sprint ON tasks(sprint);
+SQL
+
+  "$N2O" init "$TEST_DIR"
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created a migration file" >&2
+    return 1
+  fi
+
+  assert_file_contains "$migration_file" "CREATE INDEX IF NOT EXISTS idx_tasks_sprint"
+}
+
+test_generate_column_with_default() {
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  "$N2O" init "$TEST_DIR"
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created a migration file" >&2
+    return 1
+  fi
+
+  assert_file_contains "$migration_file" "DEFAULT 'pending'"
+}
+
+test_generate_no_changes() {
+  local old_schema="$TEST_DIR/old.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  # Same schema for old and new
+  cp "$old_schema" "$TEST_DIR/new.sql"
+
+  "$N2O" init "$TEST_DIR"
+
+  local output
+  output=$("$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$TEST_DIR/new.sql" 2>&1)
+
+  # Should not create a migration file
+  local migration_count
+  migration_count=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | wc -l | tr -d ' ')
+
+  assert_equals "0" "$migration_count" "No migration file should be created when schemas are identical"
+
+  # Output should indicate no changes
+  if [[ "$output" != *"No changes"* ]] && [[ "$output" != *"no changes"* ]] && [[ "$output" != *"No schema changes"* ]]; then
+    echo "    ASSERT FAILED: Should indicate no changes detected (got: $output)" >&2
+    return 1
+  fi
+}
+
+test_generate_produces_valid_sql() {
+  # Generated migration should be valid SQL that can be applied to a real db
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    priority REAL,
+    horizon TEXT DEFAULT 'active',
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  "$N2O" init "$TEST_DIR"
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '*.sql' -type f 2>/dev/null | sort | tail -1)
+
+  # Create a test db from old schema and apply the migration
+  local test_db="$TEST_DIR/test_apply.db"
+  sqlite3 "$test_db" < "$old_schema"
+
+  # This should succeed without errors
+  if ! sqlite3 "$test_db" < "$migration_file" 2>/dev/null; then
+    echo "    ASSERT FAILED: Generated migration should be valid SQL" >&2
+    return 1
+  fi
+
+  # Verify the new columns actually exist
+  assert_sqlite_column_exists "$test_db" "tasks" "priority"
+  assert_sqlite_column_exists "$test_db" "tasks" "horizon"
+}
+
+test_generate_correct_numbering() {
+  "$N2O" init "$TEST_DIR"
+
+  # Pre-create migration 001
+  mkdir -p "$TEST_DIR/.pm/migrations"
+  echo "-- existing" > "$TEST_DIR/.pm/migrations/001-existing.sql"
+
+  local old_schema="$TEST_DIR/old.sql"
+  local new_schema="$TEST_DIR/new.sql"
+
+  cat > "$old_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  cat > "$new_schema" <<'SQL'
+CREATE TABLE IF NOT EXISTS tasks (
+    sprint TEXT NOT NULL,
+    task_num INTEGER NOT NULL,
+    new_col TEXT,
+    PRIMARY KEY (sprint, task_num)
+);
+SQL
+
+  "$N2O" migrate --generate "$TEST_DIR" --old "$old_schema" --new "$new_schema" 2>&1
+
+  # Should create 002-*, not 001-*
+  local migration_file
+  migration_file=$(find "$TEST_DIR/.pm/migrations" -name '002-*.sql' -type f 2>/dev/null)
+
+  if [[ -z "$migration_file" ]]; then
+    echo "    ASSERT FAILED: Should have created migration numbered 002 (next after existing 001)" >&2
+    return 1
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # Run tests
 # -----------------------------------------------------------------------------
 
@@ -548,6 +916,18 @@ run_test "sync copies and applies migrations"                 test_sync_applies_
 run_test "sync with no pending is a no-op"                    test_sync_no_pending_is_noop
 run_test "Applied migrations have SHA256 checksum"            test_migrate_records_checksum
 run_test "Help text mentions migrate command"                 test_help_shows_migrate_command
+
+echo ""
+echo -e "${BOLD}Task 3: Migration auto-generation${NC}"
+run_test "Generate detects added column"                      test_generate_add_column
+run_test "Generate detects dropped column"                    test_generate_drop_column
+run_test "Generate detects new table"                         test_generate_new_table
+run_test "Generate detects new view"                          test_generate_new_view
+run_test "Generate detects new index"                         test_generate_new_index
+run_test "Generate preserves DEFAULT values"                  test_generate_column_with_default
+run_test "Generate with no changes creates no file"           test_generate_no_changes
+run_test "Generate produces valid SQL"                        test_generate_produces_valid_sql
+run_test "Generate uses correct numbering"                    test_generate_correct_numbering
 
 # Summary
 echo ""

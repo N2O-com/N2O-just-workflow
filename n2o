@@ -5,8 +5,10 @@ set -e
 # n2o — N2O Workflow Framework CLI
 # Usage:
 #   n2o init <project-path> [--interactive] [--register]
-#   n2o sync <project-path> [--dry-run]
-#   n2o sync --all [--dry-run]
+#   n2o sync <project-path> [--dry-run] [--force] [--only=...]
+#   n2o sync --all [--dry-run] [--force]
+#   n2o pin <project-path> [<version>] [--unpin]
+#   n2o check <project-path>
 #   n2o stats [--json]
 # =============================================================================
 
@@ -32,6 +34,172 @@ log_success() { echo -e "${GREEN}✓${NC}  $1"; }
 log_warn()    { echo -e "${YELLOW}⚠${NC}  $1"; }
 log_error()   { echo -e "${RED}✗${NC}  $1" >&2; }
 log_header()  { echo -e "\n${BOLD}$1${NC}"; }
+
+# Compare two semver strings. Returns via exit code:
+#   0 = $1 > $2 (first is greater)
+#   1 = $1 = $2 (equal)
+#   2 = $1 < $2 (first is lesser)
+version_compare() {
+  local v1="$1" v2="$2"
+  if [[ "$v1" == "$v2" ]]; then return 1; fi
+  local IFS=.
+  local i v1_parts=($v1) v2_parts=($v2)
+  for ((i=0; i<3; i++)); do
+    local a="${v1_parts[i]:-0}" b="${v2_parts[i]:-0}"
+    if ((a > b)); then return 0; fi
+    if ((a < b)); then return 2; fi
+  done
+  return 1
+}
+
+# Display changelog entries between two versions
+show_changelog() {
+  local from_version="$1"
+  local to_version="$2"
+  local changelog="$N2O_DIR/CHANGELOG.md"
+
+  if [[ ! -f "$changelog" ]]; then
+    return
+  fi
+
+  # Don't show if versions are the same
+  if [[ "$from_version" == "$to_version" ]]; then
+    return
+  fi
+
+  log_header "What's new ($from_version → $to_version)"
+
+  local in_range=false
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^##[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+      local ver="${BASH_REMATCH[1]}"
+      if [[ "$ver" == "$to_version" ]]; then
+        in_range=true
+        continue  # Skip the version header itself
+      elif [[ "$ver" == "$from_version" ]]; then
+        in_range=false
+        break
+      fi
+    fi
+    if $in_range && [[ -n "$line" ]] && [[ ! "$line" =~ ^# ]]; then
+      echo "  $line"
+    fi
+  done < "$changelog"
+}
+
+# Bump version in manifest. $1 = patch|minor|major
+bump_version() {
+  local level="${1:-patch}"
+  local current="$VERSION"
+  local IFS=.
+  local parts=($current)
+  local major="${parts[0]}" minor="${parts[1]}" patch="${parts[2]}"
+
+  case "$level" in
+    patch) ((patch++)) ;;
+    minor) ((minor++)); patch=0 ;;
+    major) ((major++)); minor=0; patch=0 ;;
+    *) log_error "Invalid bump level: $level. Use patch, minor, or major."; return 1 ;;
+  esac
+
+  local new_version="$major.$minor.$patch"
+  local tmp
+  tmp=$(mktemp)
+  jq --arg v "$new_version" '.version = $v' "$MANIFEST" > "$tmp"
+  mv "$tmp" "$MANIFEST"
+
+  # Update the global VERSION variable
+  VERSION="$new_version"
+  log_success "Version bumped: $current → $new_version"
+}
+
+# Auto-generate a changelog entry from git log since last tag
+generate_changelog_entry() {
+  local new_version="$1"
+  local changelog="$N2O_DIR/CHANGELOG.md"
+
+  # Find the last version tag
+  local last_tag
+  last_tag=$(git -C "$N2O_DIR" describe --tags --abbrev=0 2>/dev/null || echo "")
+
+  local log_range=""
+  if [[ -n "$last_tag" ]]; then
+    log_range="$last_tag..HEAD"
+  fi
+
+  # Get commit messages
+  local commits
+  commits=$(git -C "$N2O_DIR" log $log_range --oneline --no-decorate 2>/dev/null || echo "")
+
+  if [[ -z "$commits" ]]; then
+    commits="- No commits since last version"
+  else
+    # Format as bullet points
+    commits=$(echo "$commits" | sed 's/^[a-f0-9]* /- /')
+  fi
+
+  # Build the new entry
+  local entry
+  entry=$(printf "## %s\n\n%s\n" "$new_version" "$commits")
+
+  # Prepend to CHANGELOG.md
+  if [[ -f "$changelog" ]]; then
+    local existing
+    existing=$(cat "$changelog")
+    # Insert after the first line (the # N2O Changelog header)
+    local header
+    header=$(head -1 "$changelog")
+    local rest
+    rest=$(tail -n +2 "$changelog")
+    printf "%s\n\n%s\n%s" "$header" "$entry" "$rest" > "$changelog"
+  else
+    printf "# N2O Changelog\n\n%s\n" "$entry" > "$changelog"
+  fi
+
+  log_success "Generated changelog entry for v$new_version"
+}
+
+# Handle 'n2o version bump [patch|minor|major]'
+cmd_version_bump() {
+  local level="${1:-patch}"
+
+  bump_version "$level"
+  generate_changelog_entry "$VERSION"
+
+  # Create git tag
+  if git -C "$N2O_DIR" tag "v$VERSION" 2>/dev/null; then
+    log_success "Created git tag: v$VERSION"
+  else
+    log_warn "Could not create git tag v$VERSION (may already exist)"
+  fi
+
+  echo ""
+  log_info "Review CHANGELOG.md, then commit and run 'n2o sync --all'"
+}
+
+# Check if a sync category should be included
+should_sync_category() {
+  local category="$1"
+  local filter="$2"
+  # If no filter, sync everything
+  [[ -z "$filter" ]] && return 0
+  # Check if category is in comma-separated list
+  [[ ",$filter," == *",$category,"* ]]
+}
+
+# Validate sync category names
+validate_sync_categories() {
+  local categories="$1"
+  local valid="agents,patterns,schema,scripts"
+  local IFS=','
+  local cats=($categories)
+  for cat in "${cats[@]}"; do
+    if [[ ",$valid," != *",$cat,"* ]]; then
+      log_error "Unknown sync category: '$cat'. Valid categories: agents, patterns, schema, scripts"
+      exit 1
+    fi
+  done
+}
 
 check_deps() {
   for cmd in jq sqlite3; do
@@ -286,6 +454,159 @@ prompt_value() {
   fi
 }
 
+# -----------------------------------------------------------------------------
+# Health Check
+# -----------------------------------------------------------------------------
+
+run_health_check() {
+  local project_path="$1"
+  local pass=0
+  local fail=0
+
+  check_pass() { echo -e "  ${GREEN}PASS${NC}  $1"; ((pass++)) || true; }
+  check_fail() { echo -e "  ${RED}FAIL${NC}  $1"; ((fail++)) || true; }
+
+  log_header "Health Check"
+
+  # 1. Config valid JSON
+  if jq '.' "$project_path/.pm/config.json" &>/dev/null; then
+    check_pass "config.json is valid JSON"
+  else
+    check_fail "config.json is invalid JSON"
+  fi
+
+  # 2. Required config fields
+  for field in n2o_version project_name; do
+    local val
+    val=$(jq -r ".$field // \"\"" "$project_path/.pm/config.json" 2>/dev/null)
+    if [[ -n "$val" && "$val" != "null" ]]; then
+      check_pass "config.$field = $val"
+    else
+      check_fail "config.$field is missing"
+    fi
+  done
+
+  # 3. Commands object exists
+  if jq -e '.commands' "$project_path/.pm/config.json" &>/dev/null; then
+    check_pass "config.commands present"
+  else
+    check_fail "config.commands missing"
+  fi
+
+  # 4. Database exists and is valid
+  if [[ -f "$project_path/.pm/tasks.db" ]] && sqlite3 "$project_path/.pm/tasks.db" "SELECT 1;" &>/dev/null; then
+    check_pass "tasks.db exists and is valid"
+  else
+    check_fail "tasks.db missing or corrupt"
+  fi
+
+  # 5. Core tables
+  for table in tasks developers task_dependencies; do
+    local result
+    result=$(sqlite3 "$project_path/.pm/tasks.db" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';" 2>/dev/null)
+    if [[ "$result" == "$table" ]]; then
+      check_pass "Table: $table"
+    else
+      check_fail "Missing table: $table"
+    fi
+  done
+
+  # 6. Core views
+  for view in available_tasks sprint_progress blocked_tasks; do
+    local result
+    result=$(sqlite3 "$project_path/.pm/tasks.db" "SELECT name FROM sqlite_master WHERE type='view' AND name='$view';" 2>/dev/null)
+    if [[ "$result" == "$view" ]]; then
+      check_pass "View: $view"
+    else
+      check_fail "Missing view: $view"
+    fi
+  done
+
+  # 7. Schema exists
+  if [[ -f "$project_path/.pm/schema.sql" ]]; then
+    check_pass "schema.sql exists"
+  else
+    check_fail "schema.sql missing"
+  fi
+
+  # 8. Skill directories and SKILL.md files
+  for skill in pm-agent tdd-agent bug-workflow; do
+    if [[ -d "$project_path/.claude/skills/$skill" ]]; then
+      if [[ -f "$project_path/.claude/skills/$skill/SKILL.md" ]]; then
+        check_pass "Skill: $skill"
+      else
+        check_fail "Missing SKILL.md in $skill"
+      fi
+    else
+      check_fail "Missing skill directory: $skill"
+    fi
+  done
+
+  # 9. Scripts executable
+  local non_exec_count=0
+  while IFS= read -r script; do
+    if [[ ! -x "$script" ]]; then
+      check_fail "Not executable: ${script#$project_path/}"
+      ((non_exec_count++)) || true
+    fi
+  done < <(find "$project_path/scripts" -name "*.sh" -type f 2>/dev/null)
+  if [[ $non_exec_count -eq 0 ]]; then
+    check_pass "All scripts executable"
+  fi
+
+  # 10. Gitignore entries
+  if [[ -f "$project_path/.gitignore" ]]; then
+    local gitignore_ok=true
+    for entry in ".pm/tasks.db" ".n2o-backup/"; do
+      if ! grep -qF "$entry" "$project_path/.gitignore" 2>/dev/null; then
+        check_fail "Missing from .gitignore: $entry"
+        gitignore_ok=false
+      fi
+    done
+    if $gitignore_ok; then
+      check_pass "Gitignore entries present"
+    fi
+  else
+    check_fail ".gitignore missing"
+  fi
+
+  # Summary
+  echo ""
+  local total=$((pass + fail))
+  if [[ $fail -eq 0 ]]; then
+    log_success "All $total checks passed"
+    return 0
+  else
+    log_error "$fail of $total checks failed"
+    return 1
+  fi
+}
+
+cmd_check() {
+  local project_path=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -*) log_error "Unknown option: $1"; exit 1 ;;
+      *)  project_path="$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$project_path" ]]; then
+    log_error "Usage: n2o check <project-path>"
+    exit 1
+  fi
+
+  project_path="$(cd "$project_path" && pwd)"
+
+  if [[ ! -f "$project_path/.pm/config.json" ]]; then
+    log_error "Not an N2O project (missing .pm/config.json). Run 'n2o init' first."
+    exit 1
+  fi
+
+  run_health_check "$project_path"
+}
+
 # =============================================================================
 # INIT COMMAND
 # =============================================================================
@@ -509,6 +830,9 @@ HELPER
     register_project "$project_path"
   fi
 
+  # ---- Step 9: Health check ----
+  run_health_check "$project_path" || true
+
   # ---- Done ----
   echo ""
   log_header "✅ N2O workflow initialized!"
@@ -525,6 +849,64 @@ HELPER
 }
 
 # =============================================================================
+# PIN COMMAND
+# =============================================================================
+
+cmd_pin() {
+  local project_path=""
+  local unpin=false
+  local pin_version=""
+
+  # Parse args
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --unpin) unpin=true; shift ;;
+      -*)      log_error "Unknown option: $1"; exit 1 ;;
+      *)
+        if [[ -z "$project_path" ]]; then
+          project_path="$1"
+        else
+          pin_version="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$project_path" ]]; then
+    log_error "Usage: n2o pin <project-path> [<version>] [--unpin]"
+    exit 1
+  fi
+
+  project_path="$(cd "$project_path" && pwd)"
+
+  if [[ ! -f "$project_path/.pm/config.json" ]]; then
+    log_error "Not an N2O project (missing .pm/config.json). Run 'n2o init' first."
+    exit 1
+  fi
+
+  local config="$project_path/.pm/config.json"
+  local tmp
+  tmp=$(mktemp)
+
+  if $unpin; then
+    jq 'del(.n2o_version_pinned)' "$config" > "$tmp"
+    mv "$tmp" "$config"
+    log_success "Unpinned $(basename "$project_path") — will sync to latest on next 'n2o sync'"
+    return
+  fi
+
+  # Default to current n2o_version if no version specified
+  if [[ -z "$pin_version" ]]; then
+    pin_version=$(jq -r '.n2o_version // "unknown"' "$config")
+  fi
+
+  jq --arg v "$pin_version" '.n2o_version_pinned = $v' "$config" > "$tmp"
+  mv "$tmp" "$config"
+  log_success "Pinned $(basename "$project_path") to v$pin_version"
+}
+
+# =============================================================================
 # SYNC COMMAND
 # =============================================================================
 
@@ -532,16 +914,25 @@ cmd_sync() {
   local project_path=""
   local dry_run=false
   local sync_all=false
+  local force=false
+  local sync_only=""
 
   # Parse args
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dry-run) dry_run=true; shift ;;
-      --all)     sync_all=true; shift ;;
-      -*)        log_error "Unknown option: $1"; exit 1 ;;
-      *)         project_path="$1"; shift ;;
+      --dry-run)  dry_run=true; shift ;;
+      --all)      sync_all=true; shift ;;
+      --force)    force=true; shift ;;
+      --only=*)   sync_only="${1#--only=}"; shift ;;
+      --only)     sync_only="$2"; shift 2 ;;
+      -*)         log_error "Unknown option: $1"; exit 1 ;;
+      *)          project_path="$1"; shift ;;
     esac
   done
+
+  if [[ -n "${sync_only:-}" ]]; then
+    validate_sync_categories "$sync_only"
+  fi
 
   if $sync_all; then
     if [[ ! -f "$PROJECTS_FILE" ]]; then
@@ -557,23 +948,25 @@ cmd_sync() {
 
     while IFS= read -r p; do
       echo ""
-      sync_project "$p" "$dry_run"
+      sync_project "$p" "$dry_run" "$force" "$sync_only"
     done <<< "$projects"
     return
   fi
 
   if [[ -z "$project_path" ]]; then
-    log_error "Usage: n2o sync <project-path> [--dry-run] or n2o sync --all [--dry-run]"
+    log_error "Usage: n2o sync <project-path> [--dry-run] [--force] or n2o sync --all [--dry-run] [--force]"
     exit 1
   fi
 
   project_path="$(cd "$project_path" && pwd)"
-  sync_project "$project_path" "$dry_run"
+  sync_project "$project_path" "$dry_run" "$force" "$sync_only"
 }
 
 sync_project() {
   local project_path="$1"
   local dry_run="$2"
+  local force="${3:-false}"
+  local sync_only="${4:-}"
   local changes=0
   local skipped=0
 
@@ -591,7 +984,30 @@ sync_project() {
 
   local project_version
   project_version=$(jq -r '.n2o_version // "unknown"' "$project_path/.pm/config.json")
+
+  # Check version pin
+  local pinned_version
+  pinned_version=$(jq -r '.n2o_version_pinned // ""' "$project_path/.pm/config.json")
+
+  if [[ -n "$pinned_version" ]] && ! $force; then
+    # Check if framework version is newer than pinned version
+    version_compare "$VERSION" "$pinned_version"
+    local cmp=$?
+    if [[ $cmp -eq 0 ]]; then
+      log_warn "Project pinned to v$pinned_version (current framework: v$VERSION)"
+      log_info "Use 'n2o sync --force' to upgrade, or 'n2o pin --unpin' to remove the pin."
+      return 0
+    fi
+  fi
+
   log_info "Current version: $project_version → $VERSION"
+
+  # Show what changed between versions
+  show_changelog "$project_version" "$VERSION"
+
+  if [[ -n "$sync_only" ]]; then
+    log_info "Selective sync: $sync_only"
+  fi
 
   local backup_dir="$project_path/.n2o-backup/$(date +%Y%m%d-%H%M%S)"
   local schema_changed=false
@@ -600,36 +1016,44 @@ sync_project() {
   log_header "Framework files"
 
   # Sync agents
-  if [[ -d "$N2O_DIR/02-agents" ]]; then
-    sync_directory "$N2O_DIR/02-agents" "$project_path/.claude/skills" "$backup_dir" "$dry_run" "agents"
+  if should_sync_category "agents" "$sync_only"; then
+    if [[ -d "$N2O_DIR/02-agents" ]]; then
+      sync_directory "$N2O_DIR/02-agents" "$project_path/.claude/skills" "$backup_dir" "$dry_run" "agents"
+    fi
   fi
 
   # Sync patterns
-  if [[ -d "$N2O_DIR/03-patterns" ]]; then
-    sync_directory "$N2O_DIR/03-patterns" "$project_path/.claude/skills" "$backup_dir" "$dry_run" "patterns"
+  if should_sync_category "patterns" "$sync_only"; then
+    if [[ -d "$N2O_DIR/03-patterns" ]]; then
+      sync_directory "$N2O_DIR/03-patterns" "$project_path/.claude/skills" "$backup_dir" "$dry_run" "patterns"
+    fi
   fi
 
   # Sync schema.sql
-  if [[ -f "$N2O_DIR/.pm/schema.sql" ]]; then
-    if ! diff -q "$N2O_DIR/.pm/schema.sql" "$project_path/.pm/schema.sql" &>/dev/null; then
-      schema_changed=true
-      if $dry_run; then
-        log_warn "WOULD UPDATE: .pm/schema.sql"
-        diff --color=auto "$project_path/.pm/schema.sql" "$N2O_DIR/.pm/schema.sql" 2>/dev/null || true
+  if should_sync_category "schema" "$sync_only"; then
+    if [[ -f "$N2O_DIR/.pm/schema.sql" ]]; then
+      if ! diff -q "$N2O_DIR/.pm/schema.sql" "$project_path/.pm/schema.sql" &>/dev/null; then
+        schema_changed=true
+        if $dry_run; then
+          log_warn "WOULD UPDATE: .pm/schema.sql"
+          diff --color=auto "$project_path/.pm/schema.sql" "$N2O_DIR/.pm/schema.sql" 2>/dev/null || true
+        else
+          backup_file "$project_path/.pm/schema.sql" "$backup_dir"
+          cp "$N2O_DIR/.pm/schema.sql" "$project_path/.pm/schema.sql"
+          log_success "Updated .pm/schema.sql"
+        fi
+        ((changes++)) || true
       else
-        backup_file "$project_path/.pm/schema.sql" "$backup_dir"
-        cp "$N2O_DIR/.pm/schema.sql" "$project_path/.pm/schema.sql"
-        log_success "Updated .pm/schema.sql"
+        log_info "Unchanged: .pm/schema.sql"
       fi
-      ((changes++)) || true
-    else
-      log_info "Unchanged: .pm/schema.sql"
     fi
   fi
 
   # Sync scripts
-  if [[ -d "$N2O_DIR/scripts" ]]; then
-    sync_directory "$N2O_DIR/scripts" "$project_path/scripts" "$backup_dir" "$dry_run" "scripts"
+  if should_sync_category "scripts" "$sync_only"; then
+    if [[ -d "$N2O_DIR/scripts" ]]; then
+      sync_directory "$N2O_DIR/scripts" "$project_path/scripts" "$backup_dir" "$dry_run" "scripts"
+    fi
   fi
 
   # ---- Skip project files ----
@@ -660,7 +1084,12 @@ sync_project() {
   if ! $dry_run; then
     local tmp
     tmp=$(mktemp)
-    jq --arg ver "$VERSION" '.n2o_version = $ver' "$project_path/.pm/config.json" > "$tmp"
+    if $force && [[ -n "$pinned_version" ]]; then
+      # Force sync: update both version and pin
+      jq --arg ver "$VERSION" '.n2o_version = $ver | .n2o_version_pinned = $ver' "$project_path/.pm/config.json" > "$tmp"
+    else
+      jq --arg ver "$VERSION" '.n2o_version = $ver' "$project_path/.pm/config.json" > "$tmp"
+    fi
     mv "$tmp" "$project_path/.pm/config.json"
   fi
 
@@ -940,15 +1369,19 @@ cmd_stats() {
 cmd_migrate() {
   local project_path=""
   local action=""
+  local old_schema=""
+  local new_schema=""
 
   # Parse args
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --apply)   action="apply"; shift ;;
-      --status)  action="status"; shift ;;
+      --apply)    action="apply"; shift ;;
+      --status)   action="status"; shift ;;
       --generate) action="generate"; shift ;;
-      -*)        log_error "Unknown option: $1"; exit 1 ;;
-      *)         project_path="$1"; shift ;;
+      --old)      old_schema="$2"; shift 2 ;;
+      --new)      new_schema="$2"; shift 2 ;;
+      -*)         log_error "Unknown option: $1"; exit 1 ;;
+      *)          project_path="$1"; shift ;;
     esac
   done
 
@@ -978,8 +1411,7 @@ cmd_migrate() {
       migrate_status "$project_path"
       ;;
     generate)
-      log_error "Not yet implemented. See task 3 in schema-migrations sprint."
-      exit 1
+      generate_migration "$project_path" "$old_schema" "$new_schema"
       ;;
   esac
 }
@@ -1054,6 +1486,267 @@ migrate_status() {
   echo ""
 }
 
+# Parse columns from a CREATE TABLE block (one column per line)
+# Outputs: column_name<TAB>full_definition (one per line)
+# Skips PRIMARY KEY lines, UNIQUE lines, CHECK lines, FOREIGN KEY lines
+parse_table_columns() {
+  local table_body="$1"
+  echo "$table_body" | while IFS= read -r line; do
+    # Trim whitespace
+    local trimmed
+    trimmed=$(echo "$line" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+    # Skip empty, PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY, closing paren
+    case "$trimmed" in
+      "") continue ;;
+      PRIMARY*) continue ;;
+      UNIQUE*) continue ;;
+      CHECK*) continue ;;
+      FOREIGN*) continue ;;
+      ");"*) continue ;;
+      ")"*) continue ;;
+    esac
+    # Remove trailing comma
+    trimmed="${trimmed%,}"
+    # Extract column name (first word)
+    local col_name
+    col_name=$(echo "$trimmed" | awk '{print $1}')
+    # Output: name<TAB>full_definition
+    printf '%s\t%s\n' "$col_name" "$trimmed"
+  done
+}
+
+# Extract table names and their bodies from a schema file
+# Outputs blocks: TABLE_NAME<newline>body_lines<newline>END_TABLE
+extract_tables() {
+  local schema_file="$1"
+  local in_table=false
+  local table_name=""
+  local body=""
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^CREATE[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+      in_table=true
+      table_name="${BASH_REMATCH[2]}"
+      body=""
+      continue
+    fi
+    if $in_table; then
+      if [[ "$line" =~ ^\)\; ]]; then
+        echo "TABLE:$table_name"
+        echo "$body"
+        echo "END_TABLE"
+        in_table=false
+      else
+        if [[ -n "$body" ]]; then
+          body="$body"$'\n'"$line"
+        else
+          body="$line"
+        fi
+      fi
+    fi
+  done < "$schema_file"
+}
+
+# Extract new CREATE VIEW, CREATE INDEX, CREATE TABLE statements from new schema
+# that don't exist in old schema
+extract_new_statements() {
+  local old_file="$1"
+  local new_file="$2"
+  local stmt_type="$3"  # TABLE, VIEW, INDEX
+
+  local new_stmts old_stmts
+  case "$stmt_type" in
+    TABLE)
+      new_stmts=$(grep -oE 'CREATE TABLE (IF NOT EXISTS )?[a-zA-Z_][a-zA-Z0-9_]*' "$new_file" 2>/dev/null | awk '{print $NF}' || true)
+      old_stmts=$(grep -oE 'CREATE TABLE (IF NOT EXISTS )?[a-zA-Z_][a-zA-Z0-9_]*' "$old_file" 2>/dev/null | awk '{print $NF}' || true)
+      ;;
+    VIEW)
+      new_stmts=$(grep -oE 'CREATE VIEW (IF NOT EXISTS )?[a-zA-Z_][a-zA-Z0-9_]*' "$new_file" 2>/dev/null | awk '{print $NF}' || true)
+      old_stmts=$(grep -oE 'CREATE VIEW (IF NOT EXISTS )?[a-zA-Z_][a-zA-Z0-9_]*' "$old_file" 2>/dev/null | awk '{print $NF}' || true)
+      ;;
+    INDEX)
+      new_stmts=$(grep -oE 'CREATE INDEX (IF NOT EXISTS )?[a-zA-Z_][a-zA-Z0-9_]*' "$new_file" 2>/dev/null | awk '{print $NF}' || true)
+      old_stmts=$(grep -oE 'CREATE INDEX (IF NOT EXISTS )?[a-zA-Z_][a-zA-Z0-9_]*' "$old_file" 2>/dev/null | awk '{print $NF}' || true)
+      ;;
+  esac
+
+  # Find names in new but not in old
+  local name
+  for name in $new_stmts; do
+    if ! echo "$old_stmts" | grep -qx "$name" 2>/dev/null; then
+      echo "$name"
+    fi
+  done
+}
+
+# Get next migration number (zero-padded to 3 digits)
+next_migration_number() {
+  local migrations_dir="$1"
+  local max_num=0
+
+  if [[ -d "$migrations_dir" ]]; then
+    local f
+    for f in "$migrations_dir"/*.sql; do
+      [[ -e "$f" ]] || continue
+      local basename_f
+      basename_f=$(basename "$f")
+      local num
+      num=$(echo "$basename_f" | grep -oE '^[0-9]+' || true)
+      if [[ -n "$num" ]] && [[ "$((10#$num))" -gt "$max_num" ]]; then
+        max_num=$((10#$num))
+      fi
+    done
+  fi
+
+  printf '%03d' $((max_num + 1))
+}
+
+# Extract a full statement block (CREATE TABLE/VIEW/INDEX) from a schema file by name
+extract_statement_block() {
+  local schema_file="$1"
+  local stmt_type="$2"   # TABLE, VIEW, INDEX
+  local name="$3"
+
+  case "$stmt_type" in
+    TABLE)
+      # Extract from CREATE TABLE to );
+      awk "/CREATE TABLE.*${name}/,/^\\);/" "$schema_file"
+      ;;
+    VIEW)
+      # Views may have DROP VIEW before CREATE VIEW — grab both
+      awk "/DROP VIEW.*${name}/,/;/" "$schema_file"
+      echo ""
+      awk "/CREATE VIEW.*${name}/,/;/" "$schema_file"
+      ;;
+    INDEX)
+      grep "CREATE INDEX.*${name}" "$schema_file"
+      ;;
+  esac
+}
+
+generate_migration() {
+  local project_path="$1"
+  local old_schema="$2"
+  local new_schema="$3"
+  local migrations_dir="$project_path/.pm/migrations"
+
+  if [[ -z "$old_schema" ]] || [[ -z "$new_schema" ]]; then
+    log_error "Usage: n2o migrate --generate <project-path> --old <old.sql> --new <new.sql>"
+    exit 1
+  fi
+
+  if [[ ! -f "$old_schema" ]]; then
+    log_error "Old schema file not found: $old_schema"
+    exit 1
+  fi
+
+  if [[ ! -f "$new_schema" ]]; then
+    log_error "New schema file not found: $new_schema"
+    exit 1
+  fi
+
+  mkdir -p "$migrations_dir"
+
+  local migration_sql=""
+
+  # 1. Diff columns in existing tables (ADD/DROP COLUMN)
+  local old_tables new_tables
+  old_tables=$(extract_tables "$old_schema")
+  new_tables=$(extract_tables "$new_schema")
+
+  # Build list of table names from old schema
+  local old_table_names
+  old_table_names=$(echo "$old_tables" | grep '^TABLE:' | sed 's/^TABLE://')
+
+  # For each table that exists in both old and new, diff columns
+  local tname
+  for tname in $old_table_names; do
+    # Check if table also exists in new
+    if ! echo "$new_tables" | grep -q "^TABLE:$tname$"; then
+      continue
+    fi
+
+    # Get old columns
+    local old_body new_body
+    old_body=$(echo "$old_tables" | awk "/^TABLE:${tname}$/,/^END_TABLE$/" | grep -v "^TABLE:" | grep -v "^END_TABLE$")
+    new_body=$(echo "$new_tables" | awk "/^TABLE:${tname}$/,/^END_TABLE$/" | grep -v "^TABLE:" | grep -v "^END_TABLE$")
+
+    local old_cols new_cols
+    old_cols=$(parse_table_columns "$old_body")
+    new_cols=$(parse_table_columns "$new_body")
+
+    local old_col_names new_col_names
+    old_col_names=$(echo "$old_cols" | awk -F'\t' '{print $1}' | grep -v '^$' || true)
+    new_col_names=$(echo "$new_cols" | awk -F'\t' '{print $1}' | grep -v '^$' || true)
+
+    # Added columns (in new but not in old)
+    local col
+    for col in $new_col_names; do
+      if ! echo "$old_col_names" | grep -qx "$col" 2>/dev/null; then
+        # Get full definition
+        local col_def
+        col_def=$(echo "$new_cols" | awk -F'\t' -v c="$col" '$1 == c {print $2}')
+        migration_sql="${migration_sql}ALTER TABLE $tname ADD COLUMN $col_def;"$'\n'
+      fi
+    done
+
+    # Dropped columns (in old but not in new)
+    for col in $old_col_names; do
+      if ! echo "$new_col_names" | grep -qx "$col" 2>/dev/null; then
+        migration_sql="${migration_sql}ALTER TABLE $tname DROP COLUMN $col;"$'\n'
+      fi
+    done
+  done
+
+  # 2. New tables (in new but not in old)
+  local new_table_names
+  new_table_names=$(extract_new_statements "$old_schema" "$new_schema" "TABLE")
+  for tname in $new_table_names; do
+    local block
+    block=$(extract_statement_block "$new_schema" "TABLE" "$tname")
+    migration_sql="${migration_sql}${block}"$'\n'
+  done
+
+  # 3. New views (in new but not in old)
+  local new_view_names
+  new_view_names=$(extract_new_statements "$old_schema" "$new_schema" "VIEW")
+  for tname in $new_view_names; do
+    local block
+    block=$(extract_statement_block "$new_schema" "VIEW" "$tname")
+    migration_sql="${migration_sql}${block}"$'\n'
+  done
+
+  # 4. New indexes (in new but not in old)
+  local new_index_names
+  new_index_names=$(extract_new_statements "$old_schema" "$new_schema" "INDEX")
+  for tname in $new_index_names; do
+    local block
+    block=$(extract_statement_block "$new_schema" "INDEX" "$tname")
+    migration_sql="${migration_sql}${block}"$'\n'
+  done
+
+  # Check if there are any changes
+  local trimmed_sql
+  trimmed_sql=$(echo "$migration_sql" | sed '/^$/d' | sed 's/^[[:space:]]*//')
+  if [[ -z "$trimmed_sql" ]]; then
+    log_info "No schema changes detected."
+    return 0
+  fi
+
+  # Write migration file
+  local num
+  num=$(next_migration_number "$migrations_dir")
+  local migration_file="$migrations_dir/${num}-auto-generated.sql"
+  echo "-- Auto-generated migration" > "$migration_file"
+  echo "-- Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$migration_file"
+  echo "" >> "$migration_file"
+  echo "$migration_sql" >> "$migration_file"
+
+  log_success "Generated migration: $(basename "$migration_file")"
+  log_info "Review the migration before applying:"
+  log_info "  cat $migration_file"
+}
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -1068,17 +1761,28 @@ main() {
     init)
       cmd_init "$@"
       ;;
+    pin)
+      cmd_pin "$@"
+      ;;
     sync)
       cmd_sync "$@"
       ;;
     migrate)
       cmd_migrate "$@"
       ;;
+    check)
+      cmd_check "$@"
+      ;;
     stats)
       cmd_stats "$@"
       ;;
     version|--version|-v)
-      echo "n2o v$VERSION"
+      if [[ "${1:-}" == "bump" ]]; then
+        shift
+        cmd_version_bump "$@"
+      else
+        echo "n2o v$VERSION"
+      fi
       ;;
     help|--help|-h|"")
       echo "n2o — N2O Workflow Framework CLI (v$VERSION)"
@@ -1087,11 +1791,17 @@ main() {
       echo "  n2o init <project-path> [--interactive] [--register]"
       echo "      Bootstrap a new project with N2O workflow files."
       echo ""
-      echo "  n2o sync <project-path> [--dry-run]"
+      echo "  n2o sync <project-path> [--dry-run] [--force] [--only=agents,patterns,schema,scripts]"
       echo "      Push framework updates to a project."
       echo ""
-      echo "  n2o sync --all [--dry-run]"
+      echo "  n2o sync --all [--dry-run] [--force]"
       echo "      Push framework updates to all registered projects."
+      echo ""
+      echo "  n2o pin <project-path> [<version>]"
+      echo "      Pin a project to a framework version. Sync will skip pinned projects."
+      echo ""
+      echo "  n2o pin <project-path> --unpin"
+      echo "      Remove version pin, allowing sync to update to latest."
       echo ""
       echo "  n2o migrate --apply <project-path>"
       echo "      Apply pending schema migrations to a project's tasks.db."
@@ -1102,11 +1812,17 @@ main() {
       echo "  n2o migrate --generate <project-path>"
       echo "      Auto-generate a migration by diffing schema.sql changes."
       echo ""
+      echo "  n2o check <project-path>"
+      echo "      Run health check on an initialized project."
+      echo ""
       echo "  n2o stats [--json]"
       echo "      Show project statistics: sessions, tool usage, sprint progress."
       echo ""
       echo "  n2o version"
       echo "      Print the current framework version."
+      echo ""
+      echo "  n2o version bump [patch|minor|major]"
+      echo "      Bump framework version, generate changelog from git log, create git tag."
       echo ""
       echo "  n2o help"
       echo "      Show this help message."
