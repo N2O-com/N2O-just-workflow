@@ -1,0 +1,25 @@
+{
+  "name": "n2o-platform",
+  "version": "0.1.0",
+  "description": "N2O Data Platform — GraphQL Ontology API",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "migrate": "sqlite3 ../.pm/tasks.db < ../.pm/migrations/004-data-platform.sql"
+  },
+  "dependencies": {
+    "@apollo/server": "^5.4.0",
+    "better-sqlite3": "^11.7.0",
+    "dataloader": "^2.2.3",
+    "graphql": "^16.9.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.4"
+  }
+}
