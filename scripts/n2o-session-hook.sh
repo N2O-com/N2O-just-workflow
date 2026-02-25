@@ -28,6 +28,29 @@ fi
 
 output=""
 
+# --- Step 0: Developer identity and concurrent sessions ---
+developer_name=$(jq -r '.developer_name // ""' .pm/config.json 2>/dev/null)
+if [[ -z "$developer_name" ]]; then
+  developer_name=$(git config user.name 2>/dev/null || echo "unknown")
+fi
+
+# Count concurrent Claude Code sessions for this project
+concurrent_sessions=1
+if command -v pgrep &>/dev/null; then
+  # Count claude processes with this project's directory
+  concurrent_sessions=$(pgrep -f "claude" 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$concurrent_sessions" -lt 1 ]] && concurrent_sessions=1
+fi
+
+# Persist concurrent session count to developer_context table (if it exists)
+if [[ -f ".pm/tasks.db" ]]; then
+  local_hour=$(date +%H 2>/dev/null | sed 's/^0//' || echo "")
+  safe_dev="${developer_name//\'/\'\'}"
+  sqlite3 .pm/tasks.db "INSERT INTO developer_context (developer, concurrent_sessions, hour_of_day) VALUES ('${safe_dev}', ${concurrent_sessions}, ${local_hour:-0});" 2>/dev/null || true
+fi
+
+output="${output}Developer: ${developer_name} | Concurrent sessions: ${concurrent_sessions}\n"
+
 # --- Step 1: Git pull reminder (local-only, no network call) ---
 if command -v git &>/dev/null && git rev-parse --git-dir &>/dev/null 2>&1; then
   # Detect default remote branch
@@ -89,6 +112,17 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAIM_SCRIPT="$SCRIPT_DIR/coordination/claim-task.sh"
+SUPABASE_CLIENT="$SCRIPT_DIR/coordination/supabase-client.sh"
+SYNC_SCRIPT="$SCRIPT_DIR/coordination/sync-task-state.sh"
+
+# Source Supabase client if available (for agent registration)
+_supabase_available=false
+if [[ -f "$SUPABASE_CLIENT" ]]; then
+  source "$SUPABASE_CLIENT" 2>/dev/null || true
+  if [[ "$_SUPABASE_CONFIGURED" == "true" ]]; then
+    _supabase_available=true
+  fi
+fi
 
 if [[ -f ".pm/tasks.db" && -x "$CLAIM_SCRIPT" ]]; then
   # Check if there are any available tasks before attempting claim
@@ -96,7 +130,19 @@ if [[ -f ".pm/tasks.db" && -x "$CLAIM_SCRIPT" ]]; then
 
   if [[ "$available_count" -gt 0 ]]; then
     # Attempt to claim — claim-task.sh outputs JSON on stdout, logs to stderr
-    claim_json=$(bash "$CLAIM_SCRIPT" --session-id "${SESSION_ID:-unknown}" 2>/dev/null) || true
+    claim_err=$(mktemp)
+    claim_json=$(bash "$CLAIM_SCRIPT" --session-id "${SESSION_ID:-unknown}" 2>"$claim_err") || true
+
+    # Surface any claim errors to the user
+    if [[ -s "$claim_err" ]]; then
+      local err_text
+      err_text=$(cat "$claim_err")
+      # Only surface actual errors (not info/success messages)
+      if echo "$err_text" | grep -qi "error\|failed\|rejected"; then
+        output="${output}\nTask claim issue: ${err_text}\n"
+      fi
+    fi
+    rm -f "$claim_err"
 
     if [[ -n "$claim_json" ]]; then
       # Parse the claim result
@@ -110,6 +156,24 @@ if [[ -f ".pm/tasks.db" && -x "$CLAIM_SCRIPT" ]]; then
       worktree_path=$(echo "$claim_json" | jq -r '.worktree_path // ""' 2>/dev/null)
       branch=$(echo "$claim_json" | jq -r '.branch // ""' 2>/dev/null)
       agent_id=$(echo "$claim_json" | jq -r '.agent_id // ""' 2>/dev/null)
+
+      # Register agent and log session start to Supabase
+      if $_supabase_available && [[ -n "$agent_id" ]]; then
+        machine_id=$(hostname -s 2>/dev/null || echo "unknown")
+        developer=$(git config user.name 2>/dev/null || echo "")
+        supabase_register_agent "$agent_id" "$machine_id" "$developer" "$task_sprint" "$task_num" >/dev/null 2>&1 || true
+        supabase_log_event "session_start" "$agent_id" "$task_sprint" "$task_num" \
+          "{\"session_id\":\"${SESSION_ID:-unknown}\"}" >/dev/null 2>&1 || true
+
+        # Set up trap to deregister agent on session end
+        _n2o_agent_id="$agent_id"
+        _n2o_deregister() {
+          if [[ -f "$SYNC_SCRIPT" ]]; then
+            bash "$SYNC_SCRIPT" "agent-stopped" "$_n2o_agent_id" 2>/dev/null || true
+          fi
+        }
+        trap _n2o_deregister SIGINT SIGTERM EXIT
+      fi
 
       if [[ -n "$task_title" ]]; then
         output="${output}\n--- TASK AUTO-CLAIMED ---\n"
@@ -128,14 +192,29 @@ if [[ -f ".pm/tasks.db" && -x "$CLAIM_SCRIPT" ]]; then
           output="${output}\nSkills to invoke: ${task_skills}\n"
         fi
         output="${output}\nYour working directory is: ${worktree_path}\n"
-        output="${output}Begin implementation using /tdd-agent.\n"
+
+        # Determine workflow skill — default to tdd-agent unless task skills
+        # explicitly specify a different workflow (bug-workflow, pm-agent, etc.)
+        workflow_skill="tdd-agent"
+        if [[ "$task_skills" == *"bug-workflow"* ]]; then
+          workflow_skill="bug-workflow"
+        elif [[ "$task_skills" == *"pm-agent"* ]]; then
+          workflow_skill="pm-agent"
+        fi
+
+        output="${output}\nIMPORTANT: You MUST invoke /${workflow_skill} now to implement this task.\n"
+        if [[ "$workflow_skill" == "tdd-agent" ]]; then
+          output="${output}Follow the full workflow: RED → GREEN → REFACTOR → AUDIT → CODIFY → COMMIT.\n"
+          output="${output}Do NOT implement without /tdd-agent — it enforces test-first development and quality gates.\n"
+        fi
         output="${output}--- END TASK ---\n"
       fi
     fi
   fi
 fi
 
-# Print output if we have any
+# Print output if we have any (plain text, no ANSI — stdout goes to Claude context)
 if [[ -n "$output" ]]; then
-  echo -e "$output"
+  # Strip any ANSI escape codes for clean context injection
+  echo -e "$output" | sed $'s/\033\\[[0-9;]*m//g'
 fi

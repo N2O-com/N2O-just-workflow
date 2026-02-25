@@ -9,7 +9,7 @@ set -e
 #   n2o sync --all [--dry-run] [--force]
 #   n2o pin <project-path> [<version>] [--unpin]
 #   n2o check <project-path>
-#   n2o stats [--json]
+#   n2o stats [--json] [--compare <skill-name>]
 # =============================================================================
 
 N2O_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -201,44 +201,61 @@ validate_sync_categories() {
   done
 }
 
-# Register or merge the N2O SessionStart hook into .claude/settings.json
+# Register or merge the N2O hooks into .claude/settings.json
+# Registers both SessionStart (for session init) and SessionEnd (for transcript collection)
 register_session_hook() {
   local project_path="$1"
   local settings_file="$project_path/.claude/settings.json"
 
-  local n2o_hook='{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"bash scripts/n2o-session-hook.sh","timeout":5}]}]}}'
+  local start_entry='{"matcher":"startup","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/scripts/n2o-session-hook.sh\"","timeout":5}]}'
+  local end_entry='{"matcher":"","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/scripts/collect-transcripts.sh\" --quiet","timeout":30}]}'
 
   if [[ ! -f "$settings_file" ]]; then
-    # Create fresh settings with just our hook
-    echo "$n2o_hook" | jq '.' > "$settings_file"
-    log_success "Created .claude/settings.json with SessionStart hook"
+    # Create fresh settings with both hooks
+    jq -n \
+      --argjson start "$start_entry" \
+      --argjson end "$end_entry" \
+      '{"hooks":{"SessionStart":[$start],"SessionEnd":[$end]}}' > "$settings_file"
+    log_success "Created .claude/settings.json with SessionStart + SessionEnd hooks"
     return
   fi
 
-  # Check if our hook command is already registered
-  if jq -e '.hooks.SessionStart[]?.hooks[]? | select(.command == "bash scripts/n2o-session-hook.sh")' "$settings_file" &>/dev/null; then
-    log_info "SessionStart hook already registered"
-    return
-  fi
-
-  # Merge: add our SessionStart hook entry without destroying existing hooks
   local tmp
   tmp=$(mktemp)
-  local n2o_entry='{"matcher":"startup","hooks":[{"type":"command","command":"bash scripts/n2o-session-hook.sh","timeout":5}]}'
+  local changed=false
 
-  if jq -e '.hooks.SessionStart' "$settings_file" &>/dev/null; then
-    # SessionStart array exists — append our entry
-    jq --argjson entry "$n2o_entry" '.hooks.SessionStart += [$entry]' "$settings_file" > "$tmp"
-  elif jq -e '.hooks' "$settings_file" &>/dev/null; then
-    # hooks object exists but no SessionStart — add the key
-    jq --argjson entry "$n2o_entry" '.hooks.SessionStart = [$entry]' "$settings_file" > "$tmp"
-  else
-    # No hooks at all — add the whole structure
-    jq --argjson entry "$n2o_entry" '.hooks = {"SessionStart": [$entry]}' "$settings_file" > "$tmp"
+  # Ensure SessionStart hook
+  if ! jq -e '.hooks.SessionStart[]?.hooks[]? | select(.command | test("n2o-session-hook"))' "$settings_file" &>/dev/null; then
+    if jq -e '.hooks.SessionStart' "$settings_file" &>/dev/null; then
+      jq --argjson entry "$start_entry" '.hooks.SessionStart += [$entry]' "$settings_file" > "$tmp"
+    elif jq -e '.hooks' "$settings_file" &>/dev/null; then
+      jq --argjson entry "$start_entry" '.hooks.SessionStart = [$entry]' "$settings_file" > "$tmp"
+    else
+      jq --argjson entry "$start_entry" '.hooks = {"SessionStart": [$entry]}' "$settings_file" > "$tmp"
+    fi
+    mv "$tmp" "$settings_file"
+    changed=true
+    log_success "Added SessionStart hook"
   fi
 
-  mv "$tmp" "$settings_file"
-  log_success "Added SessionStart hook to .claude/settings.json"
+  # Ensure SessionEnd hook (for transcript collection)
+  if ! jq -e '.hooks.SessionEnd[]?.hooks[]? | select(.command | test("collect-transcripts"))' "$settings_file" &>/dev/null; then
+    tmp=$(mktemp)
+    if jq -e '.hooks.SessionEnd' "$settings_file" &>/dev/null; then
+      jq --argjson entry "$end_entry" '.hooks.SessionEnd += [$entry]' "$settings_file" > "$tmp"
+    elif jq -e '.hooks' "$settings_file" &>/dev/null; then
+      jq --argjson entry "$end_entry" '.hooks.SessionEnd = [$entry]' "$settings_file" > "$tmp"
+    else
+      jq --argjson entry "$end_entry" '.hooks = {"SessionEnd": [$entry]}' "$settings_file" > "$tmp"
+    fi
+    mv "$tmp" "$settings_file"
+    changed=true
+    log_success "Added SessionEnd hook (transcript collection)"
+  fi
+
+  if ! $changed; then
+    log_info "All hooks already registered"
+  fi
 }
 
 check_deps() {
@@ -505,6 +522,37 @@ run_health_check() {
 
   check_pass() { echo -e "  ${GREEN}PASS${NC}  $1"; ((pass++)) || true; }
   check_fail() { echo -e "  ${RED}FAIL${NC}  $1"; ((fail++)) || true; }
+  check_warn() { echo -e "  ${YELLOW}WARN${NC}  $1"; }
+
+  log_header "Machine Prerequisites"
+
+  # Check required dependencies
+  for cmd in jq sqlite3 git; do
+    if command -v "$cmd" &>/dev/null; then
+      local ver
+      ver=$("$cmd" --version 2>&1 | head -1)
+      check_pass "$cmd installed ($ver)"
+    else
+      check_fail "$cmd not found — install it"
+    fi
+  done
+
+  # Check bash version (need >=3.2 for associative-array-free scripts)
+  local bash_major bash_minor
+  bash_major="${BASH_VERSINFO[0]:-0}"
+  bash_minor="${BASH_VERSINFO[1]:-0}"
+  if [[ "$bash_major" -gt 3 ]] || [[ "$bash_major" -eq 3 && "$bash_minor" -ge 2 ]]; then
+    check_pass "bash ${BASH_VERSION} (>=3.2)"
+  else
+    check_fail "bash ${BASH_VERSION} is too old (need >=3.2)"
+  fi
+
+  # Check Claude Code CLI
+  if command -v claude &>/dev/null; then
+    check_pass "claude CLI installed"
+  else
+    check_warn "claude CLI not found (optional — install Claude Code)"
+  fi
 
   log_header "Health Check"
 
@@ -516,7 +564,7 @@ run_health_check() {
   fi
 
   # 2. Required config fields
-  for field in n2o_version project_name; do
+  for field in n2o_version project_name developer_name; do
     local val
     val=$(jq -r ".$field // \"\"" "$project_path/.pm/config.json" 2>/dev/null)
     if [[ -n "$val" && "$val" != "null" ]]; then
@@ -757,9 +805,14 @@ cmd_init() {
     log_info "Detected: $PROJECT_TYPE project (package manager: ${PKG_MANAGER:-none})"
   fi
 
+  # Detect developer name from git config
+  local developer_name=""
+  developer_name=$(git config user.name 2>/dev/null || echo "")
+
   if $interactive; then
     log_info "Interactive mode — press Enter to accept defaults"
     project_name=$(prompt_value "Project name" "$project_name")
+    developer_name=$(prompt_value "Developer name" "$developer_name")
     test_cmd=$(prompt_value "Test command" "$test_cmd")
     typecheck_cmd=$(prompt_value "Typecheck command" "$typecheck_cmd")
     lint_cmd=$(prompt_value "Lint command" "$lint_cmd")
@@ -778,11 +831,12 @@ cmd_init() {
     jq \
       --arg ver "$VERSION" \
       --arg name "$project_name" \
+      --arg dev "$developer_name" \
       --arg test "$test_cmd" \
       --arg tc "$typecheck_cmd" \
       --arg lint "$lint_cmd" \
       --arg build "$build_cmd" \
-      '.n2o_version = $ver | .project_name = $name | .commands.test = $test | .commands.typecheck = $tc | .commands.lint = $lint | .commands.build = $build' \
+      '.n2o_version = $ver | .project_name = $name | .developer_name = $dev | .commands.test = $test | .commands.typecheck = $tc | .commands.lint = $lint | .commands.build = $build' \
       "$project_path/.pm/config.json" > "$tmp"
     mv "$tmp" "$project_path/.pm/config.json"
     log_success "Created .pm/config.json"
@@ -805,6 +859,12 @@ cmd_init() {
     log_success "Created .pm/schema-extensions.sql"
   else
     log_info "Exists: .pm/schema-extensions.sql (skipped)"
+  fi
+
+  # ---- Step 4b: Copy rates.json ----
+  if [[ -f "$N2O_DIR/templates/rates.json" ]]; then
+    cp "$N2O_DIR/templates/rates.json" "$project_path/.pm/rates.json"
+    log_success "Copied rates.json → .pm/"
   fi
 
   # ---- Step 5: Initialize database ----
@@ -856,6 +916,7 @@ fi
 
 export N2O_VERSION=$(jq -r '.n2o_version' "$_N2O_CONFIG")
 export N2O_PROJECT=$(jq -r '.project_name' "$_N2O_CONFIG")
+export N2O_DEVELOPER=$(jq -r '.developer_name // ""' "$_N2O_CONFIG")
 export N2O_TEST_CMD=$(jq -r '.commands.test // ""' "$_N2O_CONFIG")
 export N2O_TYPECHECK_CMD=$(jq -r '.commands.typecheck // ""' "$_N2O_CONFIG")
 export N2O_LINT_CMD=$(jq -r '.commands.lint // ""' "$_N2O_CONFIG")
@@ -868,13 +929,23 @@ HELPER
   log_header "8. Registering SessionStart hook"
   register_session_hook "$project_path"
 
-  # ---- Step 9: Register project ----
+  # ---- Step 9: Install git hooks ----
+  log_header "9. Installing git hooks"
+  local install_hooks="$project_path/scripts/coordination/install-hooks.sh"
+  if [[ -x "$install_hooks" ]]; then
+    (cd "$project_path" && bash "$install_hooks" "$project_path") 2>&1 | while IFS= read -r line; do log_info "$line"; done
+    log_success "Git hooks installed (post-commit, post-merge, pre-push, post-checkout)"
+  else
+    log_info "Skipped git hooks (install-hooks.sh not found)"
+  fi
+
+  # ---- Step 10: Register project ----
   if $do_register; then
-    log_header "9. Registering project"
+    log_header "10. Registering project"
     register_project "$project_path"
   fi
 
-  # ---- Step 10: Health check ----
+  # ---- Step 11: Health check ----
   run_health_check "$project_path" || true
 
   # ---- Done ----
@@ -1093,6 +1164,19 @@ sync_project() {
     fi
   fi
 
+  # Sync rates.json (always, no category filter — it's infrastructure)
+  if [[ -f "$N2O_DIR/templates/rates.json" ]]; then
+    local dest_rates="$project_path/.pm/rates.json"
+    if [[ ! -f "$dest_rates" ]] || ! diff -q "$N2O_DIR/templates/rates.json" "$dest_rates" &>/dev/null; then
+      if $dry_run; then
+        log_warn "WOULD UPDATE: .pm/rates.json"
+      else
+        cp "$N2O_DIR/templates/rates.json" "$dest_rates"
+        log_success "Updated .pm/rates.json"
+      fi
+    fi
+  fi
+
   # Sync scripts
   if should_sync_category "scripts" "$sync_only"; then
     if [[ -d "$N2O_DIR/scripts" ]]; then
@@ -1140,6 +1224,45 @@ sync_project() {
   # ---- Ensure SessionStart hook is registered ----
   if ! $dry_run && should_sync_category "scripts" "$sync_only"; then
     register_session_hook "$project_path"
+  fi
+
+  # ---- Supabase task state sync (--force) ----
+  if $force && ! $dry_run && [[ -f "$project_path/.pm/tasks.db" ]]; then
+    local supabase_client="$project_path/scripts/coordination/supabase-client.sh"
+    if [[ -f "$supabase_client" ]]; then
+      log_header "Supabase task sync"
+      (
+        cd "$project_path"
+        source "$supabase_client"
+        if [[ "$_SUPABASE_CONFIGURED" == "true" ]]; then
+          # Sync all active sprints
+          local sprints
+          sprints=$(sqlite3 "$project_path/.pm/tasks.db" "
+            SELECT DISTINCT sprint FROM tasks WHERE status != 'green';
+          " 2>/dev/null)
+          local sync_ok=true
+          while IFS= read -r sprint; do
+            [[ -z "$sprint" ]] && continue
+            if supabase_sync_all_tasks "$sprint" "$project_path/.pm/tasks.db" >/dev/null 2>&1; then
+              log_success "Synced sprint: $sprint"
+            else
+              log_warn "Failed to sync sprint: $sprint"
+              sync_ok=false
+            fi
+          done <<< "$sprints"
+          # Log the manual sync event
+          local agent_id
+          agent_id="manual-$(hostname -s 2>/dev/null || echo 'local')-$$"
+          supabase_log_event "manual_sync" "$agent_id" "" "" \
+            '{"trigger":"n2o sync --force"}' >/dev/null 2>&1 || true
+          if $sync_ok; then
+            log_success "Task state synced to Supabase"
+          fi
+        else
+          log_info "Supabase not configured — skipped task state sync"
+        fi
+      )
+    fi
   fi
 
   # ---- Summary ----
@@ -1232,13 +1355,147 @@ format_number() {
   }'
 }
 
+cmd_stats_compare() {
+  local skill_name="$1"
+  local json_output="$2"
+  local db="$N2O_DIR/.pm/tasks.db"
+
+  # ---- JSON output mode ----
+  if [[ "$json_output" == "true" ]]; then
+    local token_json duration_json precision_json
+
+    token_json=$(sqlite3 -json "$db" "
+      SELECT skill_name, skill_version, invocations, total_input_tokens, total_output_tokens, avg_tokens_per_call
+      FROM skill_version_token_usage
+      WHERE skill_name = '$skill_name'
+      ORDER BY skill_version;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$token_json" ]] && token_json="[]"
+
+    duration_json=$(sqlite3 -json "$db" "
+      SELECT skill_name, skill_version, invocations, avg_seconds, min_seconds, max_seconds
+      FROM skill_version_duration
+      WHERE skill_name = '$skill_name'
+      ORDER BY skill_version;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$duration_json" ]] && duration_json="[]"
+
+    precision_json=$(sqlite3 -json "$db" "
+      SELECT skill_name, skill_version, tasks, avg_exploration_ratio
+      FROM skill_version_precision
+      WHERE skill_name = '$skill_name'
+      ORDER BY skill_version;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$precision_json" ]] && precision_json="[]"
+
+    jq -n \
+      --arg skill "$skill_name" \
+      --argjson token_usage "$token_json" \
+      --argjson duration "$duration_json" \
+      --argjson precision "$precision_json" \
+      '{
+        skill: $skill,
+        comparison: {
+          token_usage: $token_usage,
+          duration: $duration,
+          precision: $precision
+        }
+      }'
+    return
+  fi
+
+  # ---- Formatted terminal output ----
+  log_header "Version Comparison: $skill_name"
+
+  # --- Token Usage ---
+  local token_data
+  token_data=$(sqlite3 -separator '|' "$db" "
+    SELECT skill_version, invocations, total_input_tokens, total_output_tokens, avg_tokens_per_call
+    FROM skill_version_token_usage
+    WHERE skill_name = '$skill_name'
+    ORDER BY skill_version;
+  " 2>/dev/null || echo "")
+
+  echo ""
+  if [[ -n "$token_data" ]]; then
+    printf "  ${BOLD}Token Usage:${NC}\n"
+    printf "  ${BOLD}%-12s %8s %12s %12s %10s${NC}\n" "Version" "Calls" "Input" "Output" "Avg/Call"
+    printf "  %-12s %8s %12s %12s %10s\n" "----------" "--------" "-----------" "-----------" "--------"
+    while IFS='|' read -r version calls inp outp avg; do
+      printf "  %-12s %8s %12s %12s %10s\n" "$version" "$calls" "$(format_number "$inp")" "$(format_number "$outp")" "$(format_number "$avg")"
+    done <<< "$token_data"
+  else
+    echo -e "  ${YELLOW}No token data for ${skill_name}.${NC}"
+  fi
+
+  echo ""
+
+  # --- Duration ---
+  local duration_data
+  duration_data=$(sqlite3 -separator '|' "$db" "
+    SELECT skill_version, invocations, avg_seconds, min_seconds, max_seconds
+    FROM skill_version_duration
+    WHERE skill_name = '$skill_name'
+    ORDER BY skill_version;
+  " 2>/dev/null || echo "")
+
+  if [[ -n "$duration_data" ]]; then
+    printf "  ${BOLD}Duration (seconds):${NC}\n"
+    printf "  ${BOLD}%-12s %8s %10s %10s %10s${NC}\n" "Version" "Calls" "Avg" "Min" "Max"
+    printf "  %-12s %8s %10s %10s %10s\n" "----------" "--------" "--------" "--------" "--------"
+    while IFS='|' read -r version calls avg mn mx; do
+      printf "  %-12s %8s %10s %10s %10s\n" "$version" "$calls" "$avg" "$mn" "$mx"
+    done <<< "$duration_data"
+  else
+    echo -e "  ${YELLOW}No duration data for ${skill_name}.${NC}"
+  fi
+
+  echo ""
+
+  # --- Exploration Ratio ---
+  local precision_data
+  precision_data=$(sqlite3 -separator '|' "$db" "
+    SELECT skill_version, tasks, avg_exploration_ratio
+    FROM skill_version_precision
+    WHERE skill_name = '$skill_name'
+    ORDER BY skill_version;
+  " 2>/dev/null || echo "")
+
+  if [[ -n "$precision_data" ]]; then
+    printf "  ${BOLD}Exploration Ratio:${NC}\n"
+    printf "  ${BOLD}%-12s %8s %10s${NC}\n" "Version" "Tasks" "Avg Ratio"
+    printf "  %-12s %8s %10s\n" "----------" "--------" "--------"
+    while IFS='|' read -r version tasks ratio; do
+      # Color ratio: green if <0.3, yellow if 0.3-0.6, red if >0.6
+      local ratio_color="$GREEN"
+      if [[ -n "$ratio" ]]; then
+        local ratio_int
+        ratio_int=$(echo "$ratio" | awk '{printf "%d", $1 * 100}')
+        if [[ "$ratio_int" -gt 60 ]]; then
+          ratio_color="$RED"
+        elif [[ "$ratio_int" -gt 30 ]]; then
+          ratio_color="$YELLOW"
+        fi
+      fi
+      printf "  %-12s %8s ${ratio_color}%10s${NC}\n" "$version" "$tasks" "$ratio"
+    done <<< "$precision_data"
+  else
+    echo -e "  ${YELLOW}No precision data for ${skill_name}.${NC}"
+  fi
+
+  echo ""
+}
+
 cmd_stats() {
   local json_output=false
+  local compare_skill=""
 
   # Parse args
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json_output=true; shift ;;
+      --compare) compare_skill="$2"; shift 2 ;;
+      --compare=*) compare_skill="${1#--compare=}"; shift ;;
       -*)     log_error "Unknown option: $1"; exit 1 ;;
       *)      log_error "Unknown argument: $1"; exit 1 ;;
     esac
@@ -1259,6 +1516,12 @@ cmd_stats() {
       log_info "Refreshing transcript data..."
     fi
     (cd "$N2O_DIR" && bash scripts/collect-transcripts.sh) &>/dev/null || true
+  fi
+
+  # ---- Compare mode: delegate to cmd_stats_compare ----
+  if [[ -n "$compare_skill" ]]; then
+    cmd_stats_compare "$compare_skill" "$json_output"
+    return
   fi
 
   # ---- JSON output mode ----
@@ -1301,6 +1564,19 @@ cmd_stats() {
     " 2>/dev/null || echo "[]")
     [[ -z "$available_json" ]] && available_json="[]"
 
+    local leadership_json
+    leadership_json=$(sqlite3 -json "$db" "
+      SELECT
+        (SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-7 days')) as throughput_7d,
+        (SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-30 days')) as throughput_30d,
+        (SELECT ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440), 0) FROM tasks WHERE status='green' AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as efficiency_30d_min,
+        (SELECT ROUND(100.0 * SUM(CASE WHEN testing_posture='A' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0) FROM tasks WHERE status='green' AND testing_posture IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as quality_30d_pct,
+        (SELECT ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0)), 1) FROM tasks WHERE status='green' AND estimated_hours IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as predictability_30d,
+        (SELECT ROUND(AVG(estimated_cost_usd), 2) FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days')) as cost_per_task_30d,
+        (SELECT ROUND(AVG(user_message_count), 1) FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days')) as brain_cycles_30d;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$leadership_json" ]] && leadership_json="[]"
+
     local token_quality_json
     token_quality_json=$(sqlite3 -json "$db" "
       SELECT skill_name, sprint, invocations, total_input_tokens, total_output_tokens, avg_tokens_per_call
@@ -1329,17 +1605,28 @@ cmd_stats() {
     " 2>/dev/null || echo "[]")
     [[ -z "$blowup_json" ]] && blowup_json="[]"
 
+    local skill_versions_json
+    skill_versions_json=$(sqlite3 -json "$db" "
+      SELECT skill_name, version, framework_version, introduced_at, changelog
+      FROM skill_versions
+      ORDER BY skill_name, version;
+    " 2>/dev/null || echo "[]")
+    [[ -z "$skill_versions_json" ]] && skill_versions_json="[]"
+
     # Compose top-level JSON
     jq -n \
       --argjson sessions "$sessions_json" \
+      --argjson leadership "$leadership_json" \
       --argjson tools "$tool_usage_json" \
       --argjson sprints "$sprint_json" \
       --argjson available "$available_json" \
       --argjson token_quality "$token_quality_json" \
       --argjson precision "$precision_json" \
       --argjson blowups "$blowup_json" \
+      --argjson skill_versions "$skill_versions_json" \
       '{
         sessions: ($sessions[0] // {}),
+        leadership_metrics: ($leadership[0] // {}),
         tool_usage: $tools,
         sprint_progress: $sprints,
         available_tasks: $available,
@@ -1347,7 +1634,8 @@ cmd_stats() {
           token_usage: $token_quality,
           precision: $precision,
           blow_up_factors: $blowups
-        }
+        },
+        skill_versions: $skill_versions
       }'
     return
   fi
@@ -1373,6 +1661,79 @@ cmd_stats() {
   echo -e "  Sessions: ${BOLD}${main_sessions}${NC} main + ${BOLD}${subagent_sessions}${NC} subagent transcripts"
   echo -e "  Last session: ${last_date} (${last_sid_display}...)"
   echo -e "  Total tokens: ${BOLD}$(format_number "$total_input")${NC} input / ${BOLD}$(format_number "$total_output")${NC} output"
+
+  # === Section 1b: Leadership Metrics ===
+  log_header "Leadership Metrics (last 7d / last 30d)"
+
+  # Helper: query a metric for a time window
+  _metric_window() {
+    local query="$1"
+    local days="$2"
+    sqlite3 "$db" "$query" 2>/dev/null || echo "—"
+  }
+
+  # 1. Throughput: tasks completed per window
+  local tp_7=$(_metric_window "SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-7 days');" 7)
+  local tp_30=$(_metric_window "SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-30 days');" 30)
+
+  # 2. Efficiency: avg minutes per task
+  local eff_7=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440), 0), '—') FROM tasks WHERE status='green' AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-7 days');" 7)
+  local eff_30=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440), 0), '—') FROM tasks WHERE status='green' AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days');" 30)
+
+  # 3. Quality: A-grade rate
+  local qual_7=$(_metric_window "SELECT COALESCE(ROUND(100.0 * SUM(CASE WHEN testing_posture='A' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0), '—') FROM tasks WHERE status='green' AND testing_posture IS NOT NULL AND completed_at >= datetime('now', '-7 days');" 7)
+  local qual_30=$(_metric_window "SELECT COALESCE(ROUND(100.0 * SUM(CASE WHEN testing_posture='A' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0), '—') FROM tasks WHERE status='green' AND testing_posture IS NOT NULL AND completed_at >= datetime('now', '-30 days');" 30)
+
+  # 4. Predictability: blow-up ratio
+  local pred_7=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0)), 1), '—') FROM tasks WHERE status='green' AND estimated_hours IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-7 days');" 7)
+  local pred_30=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0)), 1), '—') FROM tasks WHERE status='green' AND estimated_hours IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days');" 30)
+
+  # 5. Adoption: % tasks using tdd-agent
+  local adopt_7=$(_metric_window "SELECT COALESCE(ROUND(100.0 * COUNT(DISTINCT we.sprint || '/' || we.task_num) / NULLIF((SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-7 days')), 0), 0), '—') FROM workflow_events we JOIN tasks t ON we.sprint = t.sprint AND we.task_num = t.task_num WHERE we.skill_name = 'tdd-agent' AND t.completed_at >= datetime('now', '-7 days');" 7)
+  local adopt_30=$(_metric_window "SELECT COALESCE(ROUND(100.0 * COUNT(DISTINCT we.sprint || '/' || we.task_num) / NULLIF((SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-30 days')), 0), 0), '—') FROM workflow_events we JOIN tasks t ON we.sprint = t.sprint AND we.task_num = t.task_num WHERE we.skill_name = 'tdd-agent' AND t.completed_at >= datetime('now', '-30 days');" 30)
+
+  # 6. Dollar cost per task
+  local cost_7=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.estimated_cost_usd), 2), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-7 days');" 7)
+  local cost_30=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.estimated_cost_usd), 2), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days');" 30)
+
+  # 7. Concurrency: avg sessions with overlapping time windows
+  local conc_7=$(_metric_window "SELECT COALESCE(ROUND(1.0 * COUNT(*) / NULLIF(COUNT(DISTINCT date(started_at)), 0), 1), '—') FROM transcripts WHERE parent_session_id IS NULL AND started_at >= datetime('now', '-7 days');" 7)
+  local conc_30=$(_metric_window "SELECT COALESCE(ROUND(1.0 * COUNT(*) / NULLIF(COUNT(DISTINCT date(started_at)), 0), 1), '—') FROM transcripts WHERE parent_session_id IS NULL AND started_at >= datetime('now', '-30 days');" 30)
+
+  # 8. Brain cycles: avg user messages per task
+  local brain_7=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.user_message_count), 1), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-7 days');" 7)
+  local brain_30=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.user_message_count), 1), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days');" 30)
+
+  printf "  ${BOLD}%-20s %10s %10s${NC}\n" "Metric" "7 days" "30 days"
+  printf "  %-20s %10s %10s\n" "--------------------" "----------" "----------"
+  printf "  %-20s %10s %10s\n" "Throughput" "${tp_7} tasks" "${tp_30} tasks"
+  printf "  %-20s %10s %10s\n" "Efficiency" "${eff_7} min" "${eff_30} min"
+  printf "  %-20s %10s %10s\n" "Quality" "${qual_7}%" "${qual_30}%"
+  printf "  %-20s %10s %10s\n" "Predictability" "${pred_7}x" "${pred_30}x"
+  printf "  %-20s %10s %10s\n" "Adoption" "${adopt_7}%" "${adopt_30}%"
+  printf "  %-20s %10s %10s\n" "Cost/Task" "\$${cost_7}" "\$${cost_30}"
+  printf "  %-20s %10s %10s\n" "Concurrency" "${conc_7}/day" "${conc_30}/day"
+  printf "  %-20s %10s %10s\n" "Brain Cycles" "${brain_7} msgs" "${brain_30} msgs"
+
+  # === Section 1c: Skill Versions ===
+  log_header "Skill Versions"
+
+  local skill_versions_data
+  skill_versions_data=$(sqlite3 -separator '|' "$db" "
+    SELECT skill_name, version, date(introduced_at)
+    FROM skill_versions
+    ORDER BY skill_name;
+  " 2>/dev/null || echo "")
+
+  if [[ -n "$skill_versions_data" ]]; then
+    printf "  ${BOLD}%-27s %-10s %12s${NC}\n" "Skill" "Version" "Since"
+    printf "  %-27s %-10s %12s\n" "---------------------------" "----------" "------------"
+    while IFS='|' read -r sv_name sv_version sv_since; do
+      printf "  %-27s %10s %12s\n" "$sv_name" "$sv_version" "$sv_since"
+    done <<< "$skill_versions_data"
+  else
+    echo -e "  ${YELLOW}No skill version data available. Run migration 003-skill-versioning.sql.${NC}"
+  fi
 
   # === Section 2: Tool Usage (top 10) ===
   log_header "Tool Usage (top 10)"
@@ -1988,8 +2349,9 @@ main() {
       echo "  n2o check <project-path>"
       echo "      Run health check on an initialized project."
       echo ""
-      echo "  n2o stats [--json]"
+      echo "  n2o stats [--json] [--compare <skill-name>]"
       echo "      Show project statistics: sessions, tool usage, sprint progress."
+      echo "      --compare: compare metrics across versions of the specified skill."
       echo ""
       echo "  n2o version"
       echo "      Print the current framework version."
