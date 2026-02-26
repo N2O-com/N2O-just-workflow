@@ -109,8 +109,8 @@ Tool Leverage
 **What's blind:**
 
 - **Routing cost**: How long does the developer spend deciding which task to pick? No data. The framework says this should be "zero effort — the next task is surfaced automatically." We can't measure whether N2O achieves this.
-- **Context loading time**: How long after starting a task does meaningful work begin? We have the first `phase_entered` event but not when the developer started reading the spec, understanding the codebase, etc. The transcript could contain this (early Read/Grep calls before any Edit), but we don't parse it.
-- **Waiting waste**: When an agent is running, is the developer idle or working on something else? We can see concurrent sessions (developer has multiple active sessions) but can't distinguish "productive multitasking" from "waiting for one task while poking at another."
+- ~~**Context loading time**~~: ✅ Now measured via `context_loading_time` view — counts Read/Glob/Grep calls before first Edit/Write as a ratio. Higher ratios mean more exploration needed before productive work.
+- ~~**Waiting waste**~~: ⚠️ Now partially measurable. `assistant_message_timestamps` + `user_message_timestamps` enable computing the gap between when the assistant responds and when the user sends the next prompt. Long gaps = idle/thinking time. Combined with `background_task_count` (async work) and concurrent session overlap, this gives a reasonable proxy for productive vs idle time.
 
 **What "good" looks like:** RED+GREEN time > 60% of total. Routing time near zero (task surfaced, developer starts immediately). Low context-switching overhead between tasks.
 
@@ -139,7 +139,7 @@ Leverage is output per brain cycle. The framework identifies two key mechanisms:
 
 **What's blind:**
 
-- **Brain cycles per task**: The framework's atomic unit. We cannot count how many times the developer intervened during a task. The transcript *contains* this (user messages vs assistant messages), but we don't parse it. This is the single highest-value blind spot in the entire Observatory.
+- ~~**Brain cycles per task**~~: ✅ Now measured via `brain_cycles_per_task` view — counts user messages per task as a proxy for human steering interventions. Also tracks avg prompt length and `max_tokens` hits (context pressure indicator).
 - **Decision framing quality**: When the system asks the developer a question, is it open-ended ("what should I do?") or well-framed ("I recommend A because X; confirm?")? The transcript contains this too, but extracting it requires NLP or manual tagging.
 - **Amdahl's Law violations**: Which loops are "almost autonomous" but still require one human step? A 99%-automated loop that needs confirmation collapses to human speed. We can't detect this without parsing interaction patterns.
 
@@ -192,12 +192,16 @@ Sustainability is how long the developer can sustain the productivity rate. The 
 | Sessions per day / per developer | `sessionTimeline` grouped by date | Derivable |
 | Task switches within a session | Multiple different `sprint/task_num` in `workflow_events` for same `session_id` | Derivable but haven't built the query |
 | FIX_AUDIT as flow interruption | `workflow_events` phase events | Good proxy — an audit failure forces a context switch back to fixing |
+| Session health status | `session_health` view | ✅ New — classifies sessions as healthy/minor_issues/context_pressure/degraded based on errors, retries, compactions |
+| Context compaction events | `transcripts.compaction_count` | ✅ New — counts memory compaction events (signals context window pressure) |
+| System errors and retries | `transcripts.system_error_count`, `system_retry_count` | ✅ New — counts API errors and retry events per session |
+| Average turn duration | `transcripts.avg_turn_duration_ms` | ✅ New — from system turn_duration messages |
 
 **What's blind:**
 
-- **Flow state**: Unmeasurable directly. We can see session length as a proxy (longer uninterrupted sessions ≈ more flow), but we can't distinguish focused flow from distracted puttering.
+- **Flow state**: Unmeasurable directly. We can see session length as a proxy (longer uninterrupted sessions ≈ more flow), but we can't distinguish focused flow from distracted puttering. However, session health metrics (errors, retries, compactions) now provide a degradation signal.
 - **Context switching cost**: We can see task switches but not the recovery time. The 23-minute figure from Mark et al. is a population average — we can't measure it per-developer.
-- **Late-session degradation**: We'd need to compare output quality (A-grade rate, reversions) in the first hour vs last hour of a session. The data exists but the query doesn't.
+- **Late-session degradation**: We'd need to compare output quality (A-grade rate, reversions) in the first hour vs last hour of a session. The data exists but the query doesn't. The new `compaction_count` and `stop_reason_counts.max_tokens` provide partial signals.
 - **Energy/time-of-day effects**: The framework suggests routing different work to different times of day. We have timestamps but haven't analyzed them for patterns.
 
 **What "good" looks like:** Sessions of 60-120 minutes (sustained focus). Minimal mid-session task switching. No late-session quality degradation. FIX_AUDIT loops < 1 per task (audit isn't constantly breaking flow).
@@ -225,8 +229,8 @@ Sustainability is how long the developer can sustain the productivity rate. The 
 
 **What's blind:**
 
-- **Dollar cost**: We have token counts but not dollar cost. Token → dollar conversion depends on model and is knowable but not computed. This is a straightforward enrichment (multiply tokens by per-model rate).
-- **Cost efficiency**: Cost per *shipped* task (excluding reverted work). Requires joining cost data with yield data.
+- ~~**Dollar cost**~~: ✅ Now computed — `transcripts.estimated_cost_usd` uses model-specific rate cards from `templates/rates.json`. Includes cache token adjustments.
+- **Cost efficiency**: Cost per *shipped* task (excluding reverted work). Requires joining cost data with yield data. Derivable from existing `estimated_cost_usd` + `task_trajectory`.
 - **Expensive-for-decisions vs cheap-for-loops**: We know the model per session but not whether the expensive model was used for the judgment-heavy part and the cheap model for execution. Subagent sessions use their own model — we could compare parent model (decisions) vs subagent model (execution).
 
 **What "good" looks like:** Tokens per task trending down. Expensive model used only for primary sessions; cheap model for subagent loops. Cost per shipped task (net of reversions) decreasing.
@@ -244,9 +248,7 @@ This is unchanged from the original spec but now positioned correctly in the equ
 - Is usage growing sprint-over-sprint?
 - What percentage of tasks go through the TDD workflow vs ad-hoc?
 
-**What we can measure today:** Broken. The `skill_usage` view tracks raw tool calls, not N2O skill invocations. `sessionTimeline.skillName` is null for most sessions. We literally cannot answer "is the framework being used?" with the current data.
-
-**The fix:** Ensure tdd-agent/pm-agent emit `skill_invoked` events; create N2O-specific skill adoption view that filters to framework skills only. See §5.2.
+**What we can measure today:** ✅ Fixed. The transcript collector now correctly classifies `Skill` tool calls as `skill_invoked` events with the skill name extracted from the tool input. The `skill_usage` view tracks both raw tool calls and skill invocations. `skill_token_usage` and `skill_version_token_usage` provide per-skill and per-version cost analysis. The tdd-agent also emits `phase_entered` events with `skill_name = 'tdd-agent'` for every phase transition, and the FIX_AUDIT event now carries audit findings in metadata.
 
 **What "good" looks like:** Every developer uses tdd-agent. Skill invocations increase each sprint. New skills are adopted within 1-2 sprints. Framework adoption rate > 80% of tasks.
 
@@ -289,27 +291,27 @@ Every node in the equation tree, with its measurement status:
 |---|---|---|---|---|
 | **Allocation** | Partial | Phase time distribution | `phase_time_distribution` | ✅ Available |
 | — Routing | Blind | Time from available → first RED | `workflow_events` | ⚠️ Derivable, not built |
-| — Context loading | Blind | (no metric) | Would need transcript parsing | ❌ Blind |
-| — Waiting waste | Blind | (no metric) | Would need idle time detection | ❌ Blind |
-| **Leverage** | Partial | Peak concurrent sessions | `sessionTimeline` | ✅ Available |
+| — Context loading | Good | Reads before first write ratio | `context_loading_time` view | ✅ Available |
+| — Waiting waste | Partial | Inter-message idle time | `user_message_timestamps` + `assistant_message_timestamps` | ⚠️ Derivable (gap = assistant ts → next user ts) |
+| **Leverage** | Good | Peak concurrent tasks / sessions / agents (3-tier overlap) | `tasks`, `transcripts` | ✅ Available |
 | — Autonomy | Partial | Audit first-pass rate | `workflow_events` | ✅ Derivable |
-| — Brain cycles/task | Blind | (no metric) | Would need transcript user-message count | ❌ Blind — **highest-value gap** |
+| — Brain cycles/task | Good | User messages per task | `brain_cycles_per_task` view | ✅ Available |
 | — Decision framing | Blind | (no metric) | Would need NLP on prompts | ❌ Blind |
-| **Yield** | Good | Reversion rate + reasons | `workflow_events`, `task_trajectory` | ✅ With §4.3 fix |
-| **Sustainability** | Partial | Session duration | `transcripts` | ✅ Available |
-| — Flow state | Blind | (no metric) | Unmeasurable directly | ❌ Blind |
+| **Yield** | Good | Reversion rate + reasons | `workflow_events`, `task_trajectory` | ✅ Available |
+| **Sustainability** | Good | Session duration + health | `transcripts`, `session_health` | ✅ Available |
+| — Flow state | Partial | Session health, compactions, errors | `session_health` view | ⚠️ Proxy (degradation signals, not flow) |
 | — Context switching | Partial | Mid-session task switches | `workflow_events` | ⚠️ Derivable, not built |
-| — Late-session degradation | Blind | (no metric) | Quality by session-hour | ⚠️ Derivable, not built |
-| **Cost** | Good | Tokens per task | `token_efficiency_trend` | ✅ Available |
-| — Dollar cost | Partial | Token × model rate | `transcripts.model` + rate card | ⚠️ Derivable, not built |
+| — Late-session degradation | Partial | Compaction + max_tokens hits | `transcripts.compaction_count`, `stop_reason_counts` | ⚠️ Proxy signals available |
+| **Cost** | Good | Tokens per task + dollar cost | `token_efficiency_trend`, `transcripts.estimated_cost_usd` | ✅ Available |
+| — Dollar cost | Good | Token × model rate | `transcripts.estimated_cost_usd` | ✅ Available |
 | — Model tier split | Good | Parent model vs subagent model | `transcripts` | ✅ Available |
-| **Adoption** | Broken | Skill invocation count | `skill_usage` (wrong data) | ❌ Needs fix (§5.2) |
+| **Adoption** | Good | Skill invocation count | `workflow_events` (skill_invoked events) | ✅ Available |
 | **Proficiency** | Partial | A-grade rate, blow-up ratio | `developer_quality`, `developer_learning_rate` | ✅ Available |
 | — Prompt quality | Blind | (no metric) | Would need NLP | ❌ Blind |
 
-**Summary:** 7 nodes with good/available data. 5 nodes derivable but not built. 6 nodes blind (no feasible metric today). 1 node broken (fixable).
+**Summary:** 13 nodes with good/available data. 4 nodes with proxy signals (derivable). 1 node derivable but not built. 1 node blind (decision framing — requires LLM-as-judge, a research problem).
 
-The ideal Observatory covers all 19 nodes. The practical Observatory starts with the 7 available + 5 derivable = 12 measurable nodes, plus the 1 fixable Adoption node. The 6 blind spots are research problems, not engineering problems.
+**New instrumentation since v1:** Comprehensive JSONL extraction now captures stop reasons, thinking blocks, service tier, sidechain flags, system errors/retries/compactions, turn durations, tool result errors, cache tokens, user/assistant message timestamps, user content length, working directory, git branch, background task count, and web search/fetch count. Three new analytics views (`brain_cycles_per_task`, `context_loading_time`, `session_health`) plus `task_trajectory` close the major data gaps. Dollar cost is computed automatically using model-specific rate cards. Idle time analysis is now derivable from the gap between assistant and user message timestamps.
 
 ---
 

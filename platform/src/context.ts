@@ -1,7 +1,7 @@
-import type Database from "better-sqlite3";
+import type { SupabasePool } from "./db.js";
 import type { Loaders } from "./loaders.js";
 
 export interface Context {
-  db: Database.Database;
+  db: SupabasePool;
   loaders: Loaders;
 }

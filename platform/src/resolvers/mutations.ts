@@ -1,8 +1,9 @@
 import type { Context } from "../context.js";
+import { queryOne } from "../db-adapter.js";
 
 export const mutationResolvers = {
   Mutation: {
-    setAvailability: (
+    setAvailability: async (
       _: any,
       args: {
         developer: string;
@@ -14,24 +15,23 @@ export const mutationResolvers = {
       },
       ctx: Context
     ) => {
-      ctx.db
-        .prepare(
-          `INSERT INTO contributor_availability (developer, date, expected_minutes, effectiveness, status, notes)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(developer, date) DO UPDATE SET
-             expected_minutes = excluded.expected_minutes,
-             effectiveness = COALESCE(excluded.effectiveness, effectiveness),
-             status = COALESCE(excluded.status, status),
-             notes = COALESCE(excluded.notes, notes)`
-        )
-        .run(
+      await ctx.db.query(
+        `INSERT INTO contributor_availability (developer, date, expected_minutes, effectiveness, status, notes)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT(developer, date) DO UPDATE SET
+           expected_minutes = excluded.expected_minutes,
+           effectiveness = COALESCE(excluded.effectiveness, contributor_availability.effectiveness),
+           status = COALESCE(excluded.status, contributor_availability.status),
+           notes = COALESCE(excluded.notes, contributor_availability.notes)`,
+        [
           args.developer,
           args.date,
           args.expectedMinutes,
           args.effectiveness ?? 1.0,
           args.status ?? "available",
-          args.notes ?? null
-        );
+          args.notes ?? null,
+        ]
+      );
 
       return {
         developer: args.developer,
@@ -43,7 +43,7 @@ export const mutationResolvers = {
       };
     },
 
-    setSkill: (
+    setSkill: async (
       _: any,
       args: {
         developer: string;
@@ -54,22 +54,21 @@ export const mutationResolvers = {
       },
       ctx: Context
     ) => {
-      ctx.db
-        .prepare(
-          `INSERT INTO developer_skills (developer, category, skill, rating, source, assessed_at)
-           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-           ON CONFLICT(developer, category, skill) DO UPDATE SET
-             rating = excluded.rating,
-             source = COALESCE(excluded.source, source),
-             assessed_at = CURRENT_TIMESTAMP`
-        )
-        .run(
+      await ctx.db.query(
+        `INSERT INTO developer_skills (developer, category, skill, rating, source, assessed_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT(developer, category, skill) DO UPDATE SET
+           rating = excluded.rating,
+           source = COALESCE(excluded.source, developer_skills.source),
+           assessed_at = NOW()`,
+        [
           args.developer,
           args.category,
           args.skill,
           args.rating,
-          args.source ?? "manager"
-        );
+          args.source ?? "manager",
+        ]
+      );
 
       return {
         developer: args.developer,
@@ -81,7 +80,7 @@ export const mutationResolvers = {
       };
     },
 
-    recordContext: (
+    recordContext: async (
       _: any,
       args: {
         developer: string;
@@ -92,19 +91,19 @@ export const mutationResolvers = {
       },
       ctx: Context
     ) => {
-      const result = ctx.db
-        .prepare(
-          `INSERT INTO developer_context (developer, concurrent_sessions, hour_of_day, alertness, environment)
-           VALUES (?, ?, ?, ?, ?)
-           RETURNING *`
-        )
-        .get(
+      const { rows } = await ctx.db.query(
+        `INSERT INTO developer_context (developer, concurrent_sessions, hour_of_day, alertness, environment)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [
           args.developer,
           args.concurrentSessions ?? 1,
           args.hourOfDay ?? new Date().getHours(),
           args.alertness ?? null,
-          args.environment ?? null
-        ) as any;
+          args.environment ?? null,
+        ]
+      );
+      const result = rows[0];
 
       return {
         id: result.id,
@@ -118,7 +117,7 @@ export const mutationResolvers = {
       };
     },
 
-    logActivity: (
+    logActivity: async (
       _: any,
       args: {
         developer?: string;
@@ -130,20 +129,20 @@ export const mutationResolvers = {
       },
       ctx: Context
     ) => {
-      const result = ctx.db
-        .prepare(
-          `INSERT INTO activity_log (developer, action, sprint, task_num, summary, metadata)
-           VALUES (?, ?, ?, ?, ?, ?)
-           RETURNING *`
-        )
-        .get(
+      const { rows } = await ctx.db.query(
+        `INSERT INTO activity_log (developer, action, sprint, task_num, summary, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [
           args.developer ?? null,
           args.action,
           args.sprint ?? null,
           args.taskNum ?? null,
           args.summary ?? null,
-          args.metadata ?? null
-        ) as any;
+          args.metadata ?? null,
+        ]
+      );
+      const result = rows[0];
 
       return {
         id: result.id,

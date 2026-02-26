@@ -1,16 +1,19 @@
 import type { Context } from "../context.js";
+import { queryAll, queryOne } from "../db-adapter.js";
 import { mapSprint, mapProject, mapTask } from "./mappers.js";
 
 export const sprintResolvers = {
   Query: {
-    sprint: (_: any, args: { name: string }, ctx: Context) => {
-      const row = ctx.db
-        .prepare("SELECT * FROM sprints WHERE name = ?")
-        .get(args.name);
+    sprint: async (_: any, args: { name: string }, ctx: Context) => {
+      const row = await queryOne(
+        ctx.db,
+        "SELECT * FROM sprints WHERE name = ?",
+        [args.name]
+      );
       return mapSprint(row);
     },
 
-    sprints: (
+    sprints: async (
       _: any,
       args: { status?: string; projectId?: string },
       ctx: Context
@@ -30,10 +33,12 @@ export const sprintResolvers = {
       const where = conditions.length
         ? `WHERE ${conditions.join(" AND ")}`
         : "";
-      return ctx.db
-        .prepare(`SELECT * FROM sprints ${where} ORDER BY start_at DESC`)
-        .all(...params)
-        .map(mapSprint);
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM sprints ${where} ORDER BY start_at DESC`,
+        params
+      );
+      return rows.map(mapSprint);
     },
   },
 
@@ -44,7 +49,7 @@ export const sprintResolvers = {
       return mapProject(row);
     },
 
-    tasks: (sprint: any, args: { status?: string }, ctx: Context) => {
+    tasks: async (sprint: any, args: { status?: string }, ctx: Context) => {
       let sql = `SELECT * FROM tasks WHERE sprint = ?`;
       const params: any[] = [sprint.name];
       if (args.status) {
@@ -52,13 +57,16 @@ export const sprintResolvers = {
         params.push(args.status);
       }
       sql += ` ORDER BY priority ASC NULLS LAST, task_num`;
-      return ctx.db.prepare(sql).all(...params).map(mapTask);
+      const rows = await queryAll(ctx.db, sql, params);
+      return rows.map(mapTask);
     },
 
-    progress: (sprint: any, _: any, ctx: Context) => {
-      const row = ctx.db
-        .prepare("SELECT * FROM sprint_progress WHERE sprint = ?")
-        .get(sprint.name) as any;
+    progress: async (sprint: any, _: any, ctx: Context) => {
+      const row = await queryOne(
+        ctx.db,
+        "SELECT * FROM sprint_progress WHERE sprint = ?",
+        [sprint.name]
+      );
 
       if (!row) {
         return {
@@ -72,18 +80,22 @@ export const sprintResolvers = {
         };
       }
 
-      const forecast = ctx.db
-        .prepare("SELECT remaining_minutes FROM sprint_forecast WHERE sprint = ?")
-        .get(sprint.name) as any;
+      const forecast = await queryOne(
+        ctx.db,
+        "SELECT remaining_minutes FROM sprint_forecast WHERE sprint = ?",
+        [sprint.name]
+      );
 
       return {
-        totalTasks: row.total_tasks,
-        pending: row.pending,
-        red: row.red,
-        green: row.green,
-        blocked: row.blocked,
-        percentComplete: row.percent_complete,
-        remainingMinutes: forecast?.remaining_minutes ?? null,
+        totalTasks: parseInt(row.total_tasks),
+        pending: parseInt(row.pending),
+        red: parseInt(row.red),
+        green: parseInt(row.green),
+        blocked: parseInt(row.blocked),
+        percentComplete: parseFloat(row.percent_complete),
+        remainingMinutes: forecast?.remaining_minutes
+          ? parseFloat(forecast.remaining_minutes)
+          : null,
       };
     },
   },

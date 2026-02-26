@@ -452,6 +452,52 @@ test_scripts_executable() {
   return $non_exec
 }
 
+test_init_existing_claude_dir_no_config() {
+  # Pre-create .claude/ directory without .pm/config.json
+  mkdir -p "$TEST_DIR/.claude"
+  echo "existing file" > "$TEST_DIR/.claude/settings.json"
+
+  "$N2O" init "$TEST_DIR"
+
+  # Init should succeed
+  assert_file_exists "$TEST_DIR/.pm/config.json"
+  assert_dir_exists "$TEST_DIR/.claude/skills"
+  # Original file should still be there
+  assert_file_contains "$TEST_DIR/.claude/settings.json" "existing file"
+}
+
+test_init_template_no_unresolved_placeholders() {
+  # Empty directory — no package.json, Cargo.toml, etc.
+  "$N2O" init "$TEST_DIR"
+
+  # CLAUDE.md should not contain any raw template placeholders
+  assert_file_not_contains "$TEST_DIR/CLAUDE.md" "{{"
+  assert_file_not_contains "$TEST_DIR/CLAUDE.md" "}}"
+}
+
+test_init_no_args() {
+  local exit_code=0
+  "$N2O" init > /dev/null 2>&1 || exit_code=$?
+  if [[ "$exit_code" -ne 1 ]]; then
+    echo "    ASSERT FAILED: n2o init with no args should exit 1 (got $exit_code)" >&2
+    return 1
+  fi
+}
+
+test_init_reinit_shows_warning() {
+  "$N2O" init "$TEST_DIR"
+
+  # Second init, pipe 'n' to decline continuing
+  local output
+  output=$(echo "n" | "$N2O" init "$TEST_DIR" 2>&1) || true
+
+  # Should mention "already initialized"
+  if [[ "$output" != *"already initialized"* ]]; then
+    echo "    ASSERT FAILED: Re-init should warn 'already initialized'" >&2
+    return 1
+  fi
+}
+
 # -----------------------------------------------------------------------------
 # Run all tests
 # -----------------------------------------------------------------------------
@@ -474,6 +520,13 @@ run_test "Register flag"                       test_register_flag
 run_test "Gitignore no duplicates"             test_gitignore_no_duplicates
 run_test "Package manager detection"           test_package_manager_detection
 run_test "Scripts are executable"              test_scripts_executable
+
+echo ""
+echo -e "${BOLD}Edge Cases${NC}"
+run_test "Existing .claude dir without config" test_init_existing_claude_dir_no_config
+run_test "No unresolved template placeholders" test_init_template_no_unresolved_placeholders
+run_test "No args exits 1"                     test_init_no_args
+run_test "Re-init shows warning"               test_init_reinit_shows_warning
 
 # Summary
 echo ""

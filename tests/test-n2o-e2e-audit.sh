@@ -362,7 +362,7 @@ audit_target_file_exists() {
     echo "    ASSERT FAILED: Expected >= 5 test functions, found $func_count" >&2
     return 1
   fi
-  assert_equals "15" "$func_count" "Should have exactly 15 test functions"
+  assert_equals "27" "$func_count" "Should have exactly 27 test functions"
 }
 
 audit_extract_function_body_works() {

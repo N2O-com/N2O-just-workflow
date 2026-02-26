@@ -1,6 +1,7 @@
 {
   "n2o_version": "1.0.0",
   "project_name": "",
+  "developer_name": "",
 
   "commands": {
     "test": "",

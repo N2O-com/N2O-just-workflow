@@ -1,15 +1,17 @@
 import type { Context } from "../context.js";
+import { queryAll } from "../db-adapter.js";
 import { mapEvent, mapTranscript } from "./mappers.js";
 import { taskResolvers } from "./task.js";
 import { sprintResolvers } from "./sprint.js";
 import { projectResolvers } from "./project.js";
 import { developerResolvers } from "./developer.js";
 import { mutationResolvers } from "./mutations.js";
+import { analyticsResolvers } from "./analytics.js";
 
 // Standalone query resolvers for events, transcripts, activity
 const standaloneResolvers = {
   Query: {
-    events: (
+    events: async (
       _: any,
       args: {
         sessionId?: string;
@@ -49,10 +51,11 @@ const standaloneResolvers = {
         params.push(args.limit);
       }
 
-      return ctx.db.prepare(sql).all(...params).map(mapEvent);
+      const rows = await queryAll(ctx.db, sql, params);
+      return rows.map(mapEvent);
     },
 
-    transcripts: (
+    transcripts: async (
       _: any,
       args: { sprint?: string; taskNum?: number; sessionId?: string },
       ctx: Context
@@ -76,15 +79,15 @@ const standaloneResolvers = {
       const where = conditions.length
         ? `WHERE ${conditions.join(" AND ")}`
         : "";
-      return ctx.db
-        .prepare(
-          `SELECT * FROM transcripts ${where} ORDER BY started_at DESC`
-        )
-        .all(...params)
-        .map(mapTranscript);
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM transcripts ${where} ORDER BY started_at DESC`,
+        params
+      );
+      return rows.map(mapTranscript);
     },
 
-    activityLog: (
+    activityLog: async (
       _: any,
       args: { limit?: number; developer?: string },
       ctx: Context
@@ -106,19 +109,17 @@ const standaloneResolvers = {
         params.push(args.limit);
       }
 
-      return ctx.db
-        .prepare(sql)
-        .all(...params)
-        .map((row: any) => ({
-          id: row.id,
-          timestamp: row.timestamp,
-          developer: row.developer,
-          action: row.action,
-          sprint: row.sprint,
-          taskNum: row.task_num,
-          summary: row.summary,
-          metadata: row.metadata,
-        }));
+      const rows = await queryAll(ctx.db, sql, params);
+      return rows.map((row: any) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        developer: row.developer,
+        action: row.action,
+        sprint: row.sprint,
+        taskNum: row.task_num,
+        summary: row.summary,
+        metadata: row.metadata,
+      }));
     },
   },
 };
@@ -131,6 +132,7 @@ export const resolvers = {
     ...projectResolvers.Query,
     ...developerResolvers.Query,
     ...standaloneResolvers.Query,
+    ...analyticsResolvers.Query,
   },
   Mutation: {
     ...mutationResolvers.Mutation,

@@ -15,6 +15,7 @@ CLAIM_SCRIPT="$N2O_DIR/scripts/coordination/claim-task.sh"
 SESSION_HOOK="$N2O_DIR/scripts/n2o-session-hook.sh"
 CREATE_SCRIPT="$N2O_DIR/scripts/coordination/create-worktree.sh"
 CLEANUP_SCRIPT="$N2O_DIR/scripts/coordination/cleanup-worktree.sh"
+MERGE_QUEUE="$N2O_DIR/scripts/coordination/merge-queue.sh"
 SCHEMA="$N2O_DIR/.pm/schema.sql"
 PASS=0
 FAIL=0
@@ -105,6 +106,16 @@ assert_equals() {
   local actual="$2"
   local msg="${3:-Expected '$expected', got '$actual'}"
   if [[ "$expected" != "$actual" ]]; then
+    echo "    ASSERT FAILED: $msg" >&2
+    return 1
+  fi
+}
+
+assert_not_equals() {
+  local not_expected="$1"
+  local actual="$2"
+  local msg="${3:-Should not equal '$not_expected'}"
+  if [[ "$not_expected" = "$actual" ]]; then
     echo "    ASSERT FAILED: $msg" >&2
     return 1
   fi
@@ -357,6 +368,136 @@ test_hook_skips_non_n2o_project() {
   fi
 }
 
+# -----------------------------------------------------------------------------
+# Merge queue auto-claim tests
+# -----------------------------------------------------------------------------
+
+# Helper: complete a task in a worktree so it's ready for merge
+complete_task_in_worktree_for_merge() {
+  local sprint="$1"
+  local task_num="$2"
+  local filename="${3:-file${task_num}.txt}"
+
+  (cd "$TEST_DIR" && bash "$CREATE_SCRIPT" "$sprint" "$task_num" >/dev/null 2>&1)
+
+  local wt_dir="$TEST_DIR/.worktrees/${sprint}-${task_num}"
+  echo "work for task $task_num" > "$wt_dir/$filename"
+  git -C "$wt_dir" add "$filename"
+  git -C "$wt_dir" commit -q -m "task $task_num: add $filename"
+
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "UPDATE tasks SET status = 'green' WHERE sprint = '$sprint' AND task_num = $task_num;"
+}
+
+test_merge_completion_autoclaims_next_task() {
+  # Setup: task 1 green with branch, task 2 pending (should be auto-claimed)
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "DELETE FROM tasks;"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    INSERT INTO tasks (sprint, task_num, title, type, status, priority) VALUES
+    ('s', 1, 'Merge me', 'infra', 'pending', 1.0),
+    ('s', 2, 'Claim me next', 'infra', 'pending', 2.0);
+  "
+  complete_task_in_worktree_for_merge "s" 1
+
+  (cd "$TEST_DIR" && bash "$MERGE_QUEUE" --once 2>/dev/null)
+
+  local status owner
+  status=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT status FROM tasks WHERE sprint = 's' AND task_num = 2;")
+  owner=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT COALESCE(owner, '') FROM tasks WHERE sprint = 's' AND task_num = 2;")
+  assert_equals "red" "$status" "Task 2 should be auto-claimed (status=red) after merge"
+  assert_not_equals "" "$owner" "Task 2 should have an owner after auto-claim"
+}
+
+test_merge_autoclaim_outputs_json() {
+  # Verify the auto-claim creates a worktree (observable effect of claim JSON being processed)
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "DELETE FROM tasks;"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    INSERT INTO tasks (sprint, task_num, title, type, status, priority) VALUES
+    ('s', 1, 'Merge me', 'infra', 'pending', 1.0),
+    ('s', 2, 'Claim me next', 'infra', 'pending', 2.0);
+  "
+  complete_task_in_worktree_for_merge "s" 1
+
+  (cd "$TEST_DIR" && bash "$MERGE_QUEUE" --once 2>/dev/null)
+
+  # Worktree should be created for the auto-claimed task
+  assert_dir_exists "$TEST_DIR/.worktrees/s-2" "Auto-claimed task should have worktree created"
+}
+
+test_merge_autoclaim_respects_priority() {
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "DELETE FROM tasks;"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    INSERT INTO tasks (sprint, task_num, title, type, status, priority) VALUES
+    ('s', 1, 'Merge me', 'infra', 'pending', 1.0),
+    ('s', 2, 'Low priority', 'infra', 'pending', 3.0),
+    ('s', 3, 'High priority', 'infra', 'pending', 2.0);
+  "
+  complete_task_in_worktree_for_merge "s" 1
+
+  (cd "$TEST_DIR" && bash "$MERGE_QUEUE" --once 2>/dev/null)
+
+  # Task 3 (priority 2.0) should be claimed before task 2 (priority 3.0)
+  local status3 status2
+  status3=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT status FROM tasks WHERE sprint = 's' AND task_num = 3;")
+  status2=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT status FROM tasks WHERE sprint = 's' AND task_num = 2;")
+  assert_equals "red" "$status3" "Higher priority task 3 should be auto-claimed"
+  assert_equals "pending" "$status2" "Lower priority task 2 should remain pending"
+}
+
+test_merge_autoclaim_respects_dependencies() {
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "DELETE FROM tasks;"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    INSERT INTO tasks (sprint, task_num, title, type, status, priority) VALUES
+    ('s', 1, 'Prerequisite', 'infra', 'pending', 1.0),
+    ('s', 2, 'Depends on 1', 'infra', 'pending', 2.0),
+    ('s', 3, 'Independent', 'infra', 'pending', 3.0);
+    INSERT INTO task_dependencies VALUES ('s', 2, 's', 1);
+  "
+  complete_task_in_worktree_for_merge "s" 1
+
+  (cd "$TEST_DIR" && bash "$MERGE_QUEUE" --once 2>/dev/null)
+
+  # After merge, task 2 is unblocked (priority 2.0) and should be claimed over task 3 (priority 3.0)
+  local status2
+  status2=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT status FROM tasks WHERE sprint = 's' AND task_num = 2;")
+  assert_equals "red" "$status2" "Dependent task 2 should be auto-claimed after prerequisite merged"
+}
+
+test_merge_autoclaim_no_tasks_graceful() {
+  # Only one task — nothing to auto-claim after merge
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "DELETE FROM tasks;"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    INSERT INTO tasks (sprint, task_num, title, type, status, priority) VALUES
+    ('s', 1, 'Only task', 'infra', 'pending', 1.0);
+  "
+  complete_task_in_worktree_for_merge "s" 1
+
+  local rc=0
+  (cd "$TEST_DIR" && bash "$MERGE_QUEUE" --once 2>/dev/null) || rc=$?
+  assert_equals "0" "$rc" "Merge queue should not crash when no tasks to auto-claim"
+
+  # Task 1 should still be properly merged
+  local merged_at
+  merged_at=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT merged_at FROM tasks WHERE sprint = 's' AND task_num = 1;")
+  assert_not_equals "" "$merged_at" "Task 1 should still be merged even with no auto-claim target"
+}
+
+test_merge_autoclaim_maintains_session_id() {
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "DELETE FROM tasks;"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    INSERT INTO tasks (sprint, task_num, title, type, status, priority, session_id) VALUES
+    ('s', 1, 'Merge me', 'infra', 'pending', 1.0, 'sess-abc-123'),
+    ('s', 2, 'Claim me next', 'infra', 'pending', 2.0, NULL);
+  "
+  complete_task_in_worktree_for_merge "s" 1
+
+  (cd "$TEST_DIR" && bash "$MERGE_QUEUE" --once 2>/dev/null)
+
+  # Task 2 should have inherited the session_id from task 1
+  local session_id
+  session_id=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT COALESCE(session_id, '') FROM tasks WHERE sprint = 's' AND task_num = 2;")
+  assert_equals "sess-abc-123" "$session_id" "Auto-claimed task should inherit session_id from completed task"
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -392,6 +533,15 @@ run_test "Hook shows done_when criteria"                test_hook_shows_done_whe
 run_test "Hook handles no available tasks gracefully"   test_hook_no_tasks_no_crash
 run_test "Hook skips non-startup events"                test_hook_skips_non_startup
 run_test "Hook skips non-N2O projects"                  test_hook_skips_non_n2o_project
+
+echo ""
+echo -e "${BOLD}Merge Queue — Auto-Claim${NC}"
+run_test "Merge completion auto-claims next task"        test_merge_completion_autoclaims_next_task
+run_test "Auto-claim creates worktree (JSON processed)"  test_merge_autoclaim_outputs_json
+run_test "Auto-claim respects priority ordering"         test_merge_autoclaim_respects_priority
+run_test "Auto-claim respects dependencies"              test_merge_autoclaim_respects_dependencies
+run_test "No tasks to auto-claim — graceful"             test_merge_autoclaim_no_tasks_graceful
+run_test "Auto-claim maintains session_id"               test_merge_autoclaim_maintains_session_id
 
 echo ""
 echo -e "${BOLD}Results: $PASS passed, $FAIL failed, $TOTAL total${NC}"

@@ -1,44 +1,48 @@
 import type { Context } from "../context.js";
+import { queryAll, queryOne } from "../db-adapter.js";
 import { mapDeveloper, mapTask } from "./mappers.js";
 
 export { mapDeveloper };
 
 export const developerResolvers = {
   Query: {
-    developer: (_: any, args: { name: string }, ctx: Context) => {
-      const row = ctx.db
-        .prepare("SELECT * FROM developers WHERE name = ?")
-        .get(args.name);
+    developer: async (_: any, args: { name: string }, ctx: Context) => {
+      const row = await queryOne(
+        ctx.db,
+        "SELECT * FROM developers WHERE name = ?",
+        [args.name]
+      );
       return mapDeveloper(row);
     },
 
-    developers: (_: any, __: any, ctx: Context) => {
-      return ctx.db
-        .prepare("SELECT * FROM developers ORDER BY name")
-        .all()
-        .map(mapDeveloper);
+    developers: async (_: any, __: any, ctx: Context) => {
+      const rows = await queryAll(
+        ctx.db,
+        "SELECT * FROM developers ORDER BY name"
+      );
+      return rows.map(mapDeveloper);
     },
   },
 
   Developer: {
-    skills: (dev: any, _: any, ctx: Context) => {
-      return ctx.db
-        .prepare(
-          `SELECT * FROM developer_skills WHERE developer = ? ORDER BY category, skill`
-        )
-        .all(dev.name)
-        .map((row: any) => ({
-          developer: row.developer,
-          category: row.category,
-          skill: row.skill,
-          rating: row.rating,
-          source: row.source,
-          evidence: row.evidence,
-          assessedAt: row.assessed_at,
-        }));
+    skills: async (dev: any, _: any, ctx: Context) => {
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM developer_skills WHERE developer = ? ORDER BY category, skill`,
+        [dev.name]
+      );
+      return rows.map((row: any) => ({
+        developer: row.developer,
+        category: row.category,
+        skill: row.skill,
+        rating: row.rating,
+        source: row.source,
+        evidence: row.evidence,
+        assessedAt: row.assessed_at,
+      }));
     },
 
-    tasks: (
+    tasks: async (
       dev: any,
       args: { status?: string; sprint?: string },
       ctx: Context
@@ -55,21 +59,21 @@ export const developerResolvers = {
         params.push(args.sprint);
       }
 
-      return ctx.db
-        .prepare(
-          `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY sprint, task_num`
-        )
-        .all(...params)
-        .map(mapTask);
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM tasks WHERE ${conditions.join(" AND ")} ORDER BY sprint, task_num`,
+        params
+      );
+      return rows.map(mapTask);
     },
 
-    availability: (dev: any, args: { date?: string }, ctx: Context) => {
+    availability: async (dev: any, args: { date?: string }, ctx: Context) => {
       const date = args.date ?? new Date().toISOString().split("T")[0];
-      const row = ctx.db
-        .prepare(
-          `SELECT * FROM contributor_availability WHERE developer = ? AND date = ?`
-        )
-        .get(dev.name, date) as any;
+      const row = await queryOne(
+        ctx.db,
+        `SELECT * FROM contributor_availability WHERE developer = ? AND date = ?`,
+        [dev.name, date]
+      );
 
       if (!row) return null;
       return {
@@ -82,59 +86,58 @@ export const developerResolvers = {
       };
     },
 
-    context: (dev: any, args: { latest?: boolean }, ctx: Context) => {
+    context: async (dev: any, args: { latest?: boolean }, ctx: Context) => {
       const limit = args.latest ? "LIMIT 1" : "LIMIT 20";
-      return ctx.db
-        .prepare(
-          `SELECT * FROM developer_context WHERE developer = ? ORDER BY recorded_at DESC ${limit}`
-        )
-        .all(dev.name)
-        .map((row: any) => ({
-          id: row.id,
-          developer: row.developer,
-          recordedAt: row.recorded_at,
-          concurrentSessions: row.concurrent_sessions,
-          hourOfDay: row.hour_of_day,
-          alertness: row.alertness,
-          environment: row.environment,
-          notes: row.notes,
-        }));
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM developer_context WHERE developer = ? ORDER BY recorded_at DESC ${limit}`,
+        [dev.name]
+      );
+      return rows.map((row: any) => ({
+        id: row.id,
+        developer: row.developer,
+        recordedAt: row.recorded_at,
+        concurrentSessions: row.concurrent_sessions,
+        hourOfDay: row.hour_of_day,
+        alertness: row.alertness,
+        environment: row.environment,
+        notes: row.notes,
+      }));
     },
 
-    velocity: (dev: any, _: any, ctx: Context) => {
-      const row = ctx.db
-        .prepare(
-          `SELECT
-            ROUND(AVG(actual_minutes)) as avg_minutes,
-            ROUND(AVG(blow_up_ratio), 2) as blow_up_ratio,
-            COUNT(*) as total
-           FROM effective_velocity
-           WHERE owner = ?`
-        )
-        .get(dev.name) as any;
+    velocity: async (dev: any, _: any, ctx: Context) => {
+      const row = await queryOne(
+        ctx.db,
+        `SELECT
+          ROUND(AVG(actual_minutes)) as avg_minutes,
+          ROUND(AVG(blow_up_ratio)::numeric, 2) as blow_up_ratio,
+          COUNT(*) as total
+         FROM effective_velocity
+         WHERE owner = ?`,
+        [dev.name]
+      );
 
-      if (!row || row.total === 0) {
-        // Fall back to basic velocity view
-        const basic = ctx.db
-          .prepare(
-            `SELECT avg_hours, completed_tasks FROM developer_velocity WHERE owner = ?`
-          )
-          .get(dev.name) as any;
+      if (!row || parseInt(row.total) === 0) {
+        const basic = await queryOne(
+          ctx.db,
+          `SELECT avg_hours, completed_tasks FROM developer_velocity WHERE owner = ?`,
+          [dev.name]
+        );
 
         if (!basic) {
           return { avgMinutes: null, blowUpRatio: null, totalTasksCompleted: 0 };
         }
         return {
-          avgMinutes: basic.avg_hours ? basic.avg_hours * 60 : null,
+          avgMinutes: basic.avg_hours ? parseFloat(basic.avg_hours) * 60 : null,
           blowUpRatio: null,
-          totalTasksCompleted: basic.completed_tasks ?? 0,
+          totalTasksCompleted: parseInt(basic.completed_tasks) ?? 0,
         };
       }
 
       return {
-        avgMinutes: row.avg_minutes,
-        blowUpRatio: row.blow_up_ratio,
-        totalTasksCompleted: row.total,
+        avgMinutes: row.avg_minutes ? parseFloat(row.avg_minutes) : null,
+        blowUpRatio: row.blow_up_ratio ? parseFloat(row.blow_up_ratio) : null,
+        totalTasksCompleted: parseInt(row.total),
       };
     },
   },

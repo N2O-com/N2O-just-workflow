@@ -1,0 +1,131 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 1px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 1px);
+  --radius-xl: calc(var(--radius) + 2px);
+  --radius-2xl: calc(var(--radius) + 4px);
+  --radius-3xl: calc(var(--radius) + 6px);
+  --radius-4xl: calc(var(--radius) + 8px);
+
+  /* Palantir semantic colors */
+  --color-status-green: #238551;
+  --color-status-red: #CD4246;
+  --color-status-orange: #EC9A3C;
+  --color-status-teal: #00A396;
+  --color-status-blue: #2D72D2;
+  --color-surface: var(--card);
+  --color-surface-raised: var(--secondary);
+}
+
+/* Palantir Foundry dark theme — dark-only, no light mode */
+:root {
+  --radius: 2px;
+
+  /* Canvas = main background (very dark blue-gray) */
+  --background: #1C2127;
+  --foreground: #F5F8FA;
+
+  /* Surface = cards, panels */
+  --card: #252A31;
+  --card-foreground: #F5F8FA;
+  --popover: #252A31;
+  --popover-foreground: #F5F8FA;
+
+  /* Primary = accent blue */
+  --primary: #2D72D2;
+  --primary-foreground: #FFFFFF;
+
+  /* Secondary = raised surfaces */
+  --secondary: #2F343C;
+  --secondary-foreground: #F5F8FA;
+
+  /* Muted = dimmed elements */
+  --muted: #2F343C;
+  --muted-foreground: #738694;
+
+  /* Accent = interactive highlights */
+  --accent: #2F343C;
+  --accent-foreground: #A7B6C2;
+
+  /* Destructive = red */
+  --destructive: #CD4246;
+
+  /* Borders */
+  --border: #394048;
+  --input: #394048;
+  --ring: #2D72D2;
+
+  /* Charts */
+  --chart-1: #2D72D2;
+  --chart-2: #238551;
+  --chart-3: #EC9A3C;
+  --chart-4: #CD4246;
+  --chart-5: #00A396;
+
+  /* Sidebar */
+  --sidebar: #1C2127;
+  --sidebar-foreground: #A7B6C2;
+  --sidebar-primary: #2D72D2;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #2F343C;
+  --sidebar-accent-foreground: #F5F8FA;
+  --sidebar-border: #394048;
+  --sidebar-ring: #2D72D2;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  /* Dense padding for Palantir feel */
+  html {
+    font-size: 14px;
+  }
+  /* Monospace for data elements */
+  [data-mono] {
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+  }
+}

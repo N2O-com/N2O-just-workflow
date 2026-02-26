@@ -1,5 +1,6 @@
 ---
 name: detect-project
+version: "1.0.0"
 description: "Use when the user wants to scan the codebase and fill in CLAUDE.md project context. Triggers: detect project, scan project, fill in CLAUDE, update project context, populate CLAUDE.md, scan codebase, what's in this project, set up project context. Run this after n2o init or whenever the project structure changes."
 ---
 

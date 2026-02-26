@@ -243,6 +243,62 @@ test_lint_skills_still_passes() {
   fi
 }
 
+# -----------------------------------------------------------------------------
+# Task 1b: lint-skills.sh specific validation tests
+# -----------------------------------------------------------------------------
+
+test_lint_list_shows_skills() {
+  local output
+  output=$(bash "$N2O_DIR/scripts/lint-skills.sh" --list 2>&1)
+  # Should list known skills
+  if [[ "$output" != *"tdd-agent"* ]]; then
+    echo "    ASSERT FAILED: --list should show tdd-agent" >&2
+    return 1
+  fi
+  if [[ "$output" != *"pm-agent"* ]]; then
+    echo "    ASSERT FAILED: --list should show pm-agent" >&2
+    return 1
+  fi
+}
+
+test_lint_specific_skill() {
+  local rc=0
+  bash "$N2O_DIR/scripts/lint-skills.sh" "tdd-agent" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "    ASSERT FAILED: lint-skills.sh tdd-agent should pass (exit code $rc)" >&2
+    return 1
+  fi
+}
+
+test_lint_unknown_skill_exits_1() {
+  local rc=0
+  bash "$N2O_DIR/scripts/lint-skills.sh" "nonexistent-skill" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    ASSERT FAILED: Unknown skill should exit non-zero" >&2
+    return 1
+  fi
+}
+
+test_lint_checks_version() {
+  # All skills that lint-skills.sh knows about should have valid semver
+  local output
+  output=$(bash "$N2O_DIR/scripts/lint-skills.sh" 2>&1)
+  # The linter checks for version field — verify it reports "version:" for each skill
+  if [[ "$output" != *"version:"* ]]; then
+    echo "    ASSERT FAILED: Linter should check and report version field" >&2
+    return 1
+  fi
+}
+
+test_lint_all_skills_pass() {
+  local rc=0
+  bash "$N2O_DIR/scripts/lint-skills.sh" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "    ASSERT FAILED: All skills should pass lint (exit code $rc)" >&2
+    return 1
+  fi
+}
+
 # =============================================================================
 # Task 2: CLAUDE.md template & config tests
 # =============================================================================
@@ -411,6 +467,14 @@ run_test "All descriptions are substantive (80+ chars)"          test_descriptio
 run_test "Agent skills have contextual triggers"                 test_agent_skills_have_contextual_triggers
 run_test "Pattern skills have ambient/passive language"          test_pattern_skills_have_ambient_language
 run_test "lint-skills.sh still passes"                           test_lint_skills_still_passes
+
+echo ""
+echo -e "${BOLD}Task 1b: lint-skills.sh validation${NC}"
+run_test "lint-skills.sh --list shows known skills"              test_lint_list_shows_skills
+run_test "lint-skills.sh with specific skill (tdd-agent)"        test_lint_specific_skill
+run_test "lint-skills.sh with unknown skill exits 1"             test_lint_unknown_skill_exits_1
+run_test "lint-skills.sh validates version in frontmatter"       test_lint_checks_version
+run_test "lint-skills.sh all skills pass full lint"              test_lint_all_skills_pass
 
 echo ""
 echo -e "${BOLD}Task 2: CLAUDE.md template & config${NC}"

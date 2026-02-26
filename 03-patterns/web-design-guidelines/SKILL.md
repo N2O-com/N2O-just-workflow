@@ -1,5 +1,6 @@
 ---
 name: web-design-guidelines
+version: "1.0.0"
 description: "Consult this skill automatically when writing or reviewing UI code, HTML, CSS, or frontend layouts. Use as an ambient guide for accessibility, responsive design, and UX patterns. Triggers: review my UI, check accessibility, audit design, review UX, check my site against best practices, writing CSS, building a form, creating a layout, designing a page, UI review, web accessibility, WCAG compliance."
 argument-hint: <file-or-pattern>
 ---

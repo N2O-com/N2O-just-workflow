@@ -1,7 +1,7 @@
 #!/bin/bash
 # Atomically claim the next available task for this agent.
 #
-# Usage: ./scripts/coordination/claim-task.sh [--sprint <sprint>] [--agent-id <id>] [--session-id <id>]
+# Usage: ./scripts/coordination/claim-task.sh [--sprint <sprint>] [--agent-id <id>] [--session-id <id>] [--no-verify]
 # Example: ./scripts/coordination/claim-task.sh --sprint coordination
 #
 # This script:
@@ -11,6 +11,7 @@
 # 4. Verifies claim with changes() — retries with next task if contention
 # 5. Calls create-worktree.sh for the claimed task
 # 6. Outputs task details as JSON on stdout
+# 7. (Optional) Verifies claim with Supabase in background — rollback if rejected
 #
 # Exit codes:
 #   0 — task claimed successfully (JSON on stdout)
@@ -25,11 +26,27 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# --- Helpers ---
+
+# Sanitize a string for safe use in SQL single-quoted values.
+# Escapes single quotes and rejects dangerous characters.
+sanitize_sql() {
+    local val="$1"
+    # Reject semicolons (statement termination) and double-dashes (SQL comments)
+    if echo "$val" | grep -qE '[;]|--' 2>/dev/null; then
+        echo -e "${RED}Error: Invalid characters in argument: $val${NC}" >&2
+        exit 1
+    fi
+    # Escape single quotes for SQL
+    echo "${val//\'/\'\'}"
+}
+
 # --- Parse arguments ---
 
 SPRINT_FILTER=""
 AGENT_ID=""
 SESSION_ID=""
+NO_VERIFY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,13 +62,28 @@ while [[ $# -gt 0 ]]; do
             SESSION_ID="$2"
             shift 2
             ;;
+        --no-verify)
+            NO_VERIFY=true
+            shift
+            ;;
         *)
             echo -e "${RED}Error: Unknown argument: $1${NC}" >&2
-            echo "Usage: $0 [--sprint <sprint>] [--agent-id <id>] [--session-id <id>]" >&2
+            echo "Usage: $0 [--sprint <sprint>] [--agent-id <id>] [--session-id <id>] [--no-verify]" >&2
             exit 1
             ;;
     esac
 done
+
+# Sanitize all user-provided inputs before SQL use
+if [ -n "$SPRINT_FILTER" ]; then
+    SPRINT_FILTER=$(sanitize_sql "$SPRINT_FILTER")
+fi
+if [ -n "$AGENT_ID" ]; then
+    AGENT_ID=$(sanitize_sql "$AGENT_ID")
+fi
+if [ -n "$SESSION_ID" ]; then
+    SESSION_ID=$(sanitize_sql "$SESSION_ID")
+fi
 
 # --- Locate project root ---
 
@@ -73,6 +105,14 @@ CREATE_WORKTREE="$SCRIPT_DIR/create-worktree.sh"
 if [ ! -f "$CREATE_WORKTREE" ]; then
     echo -e "${RED}Error: create-worktree.sh not found at $CREATE_WORKTREE${NC}" >&2
     exit 1
+fi
+
+CLEANUP_WORKTREE="$SCRIPT_DIR/cleanup-worktree.sh"
+
+# Source Supabase client for background verification (non-fatal if missing)
+SUPABASE_CLIENT="$SCRIPT_DIR/supabase-client.sh"
+if [ -f "$SUPABASE_CLIENT" ]; then
+    source "$SUPABASE_CLIENT"
 fi
 
 # --- Generate agent ID if not provided ---
@@ -113,6 +153,7 @@ CLAIMED_DESCRIPTION=""
 CLAIMED_DONE_WHEN=""
 CLAIMED_TYPE=""
 CLAIMED_SKILLS=""
+CLAIMED_INDEX=0
 
 # Parse candidates and try each one
 COUNT=$(echo "$CANDIDATES" | jq 'length')
@@ -155,6 +196,7 @@ for i in $(seq 0 $((COUNT - 1))); do
         CLAIMED_DONE_WHEN=$(echo "$CANDIDATES" | jq -r ".[$i].done_when // \"\"")
         CLAIMED_TYPE=$(echo "$CANDIDATES" | jq -r ".[$i].type // \"\"")
         CLAIMED_SKILLS=$(echo "$CANDIDATES" | jq -r ".[$i].skills // \"\"")
+        CLAIMED_INDEX=$i
         echo -e "${GREEN}Claimed: ${SPRINT}#${TASK_NUM} — ${TITLE}${NC}" >&2
         break
     else
@@ -180,6 +222,121 @@ if [ -z "$WORKTREE_PATH" ]; then
         WHERE sprint = '$CLAIMED_SPRINT' AND task_num = $CLAIMED_TASK_NUM;
     "
     exit 1
+fi
+
+# --- Background Supabase verification ---
+
+_bg_handle_rejection() {
+    local sprint="$1" task_num="$2" agent_id="$3" session_id="$4"
+
+    # Unclaim locally
+    sqlite3 "$DB_PATH" "
+        UPDATE tasks
+        SET owner = NULL, status = 'pending', session_id = NULL
+        WHERE sprint = '$sprint' AND task_num = $task_num;
+    " 2>/dev/null || true
+
+    # Cleanup worktree
+    if [ -f "$CLEANUP_WORKTREE" ]; then
+        bash "$CLEANUP_WORKTREE" "$sprint" "$task_num" --force 2>/dev/null || true
+    fi
+
+    # Write rejection sentinel
+    jq -n \
+        --arg sprint "$sprint" \
+        --argjson task_num "$task_num" \
+        --arg agent_id "$agent_id" \
+        --arg reason "supabase_rejected" \
+        --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{sprint: $sprint, task_num: $task_num, agent_id: $agent_id, reason: $reason, timestamp: $timestamp}' \
+        > "$PROJECT_ROOT/.pm/claim-rejected-${sprint}-${task_num}" 2>/dev/null || true
+}
+
+_bg_verify_claim() {
+    set +e  # Background handler manages its own errors
+
+    # Attempt Supabase verification via _supabase_request directly
+    # Return code distinguishes unreachable (rc!=0) from rejection (rc=0, empty result)
+    local result rc=0
+    result=$(_supabase_request "PATCH" \
+        "tasks?sprint=eq.${CLAIMED_SPRINT}&task_num=eq.${CLAIMED_TASK_NUM}&owner=is.null" \
+        "{\"owner\":\"${AGENT_ID}\",\"status\":\"red\"}" \
+        2>/dev/null) || rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+        # HTTP error or connection failure — treat as unreachable, local claim stands
+        echo -e "${YELLOW}WARNING: Supabase unreachable — local claim stands for ${CLAIMED_SPRINT}#${CLAIMED_TASK_NUM}${NC}" >&2
+        return 0
+    fi
+
+    # Request succeeded (2xx) — check if claim was accepted
+    if [ -n "$result" ] && [ "$result" != "[]" ]; then
+        echo -e "${GREEN}Supabase verified: ${CLAIMED_SPRINT}#${CLAIMED_TASK_NUM}${NC}" >&2
+        return 0
+    fi
+
+    # 2xx but empty result — claim rejected by Supabase
+    echo -e "${RED}Supabase rejected: ${CLAIMED_SPRINT}#${CLAIMED_TASK_NUM} — rolling back${NC}" >&2
+    _bg_handle_rejection "$CLAIMED_SPRINT" "$CLAIMED_TASK_NUM" "$AGENT_ID" "$SESSION_ID"
+
+    # Attempt to claim next candidate from original list
+    for j in $(seq $((CLAIMED_INDEX + 1)) $((COUNT - 1))); do
+        local next_sprint next_task_num
+        next_sprint=$(echo "$CANDIDATES" | jq -r ".[$j].sprint")
+        next_task_num=$(echo "$CANDIDATES" | jq -r ".[$j].task_num")
+
+        local next_session_set=""
+        if [ -n "$SESSION_ID" ]; then
+            next_session_set=", session_id = '$SESSION_ID'"
+        fi
+
+        sqlite3 "$DB_PATH" "
+            UPDATE tasks
+            SET owner = '$AGENT_ID', status = 'red' $next_session_set
+            WHERE sprint = '$next_sprint'
+              AND task_num = $next_task_num
+              AND owner IS NULL
+              AND status = 'pending';
+        " 2>/dev/null || continue
+
+        local actual_owner
+        actual_owner=$(sqlite3 "$DB_PATH" "
+            SELECT owner FROM tasks WHERE sprint = '$next_sprint' AND task_num = $next_task_num;
+        " 2>/dev/null)
+
+        if [ "$actual_owner" != "$AGENT_ID" ]; then
+            continue
+        fi
+
+        echo -e "${GREEN}Re-claimed: ${next_sprint}#${next_task_num}${NC}" >&2
+        bash "$CREATE_WORKTREE" "$next_sprint" "$next_task_num" 2>/dev/null || true
+
+        # Verify retry with Supabase
+        local retry_result retry_rc=0
+        retry_result=$(_supabase_request "PATCH" \
+            "tasks?sprint=eq.${next_sprint}&task_num=eq.${next_task_num}&owner=is.null" \
+            "{\"owner\":\"${AGENT_ID}\",\"status\":\"red\"}" \
+            2>/dev/null) || retry_rc=$?
+
+        if [ "$retry_rc" -ne 0 ]; then
+            echo -e "${YELLOW}WARNING: Supabase unreachable on retry — local claim stands${NC}" >&2
+            return 0
+        fi
+
+        if [ -n "$retry_result" ] && [ "$retry_result" != "[]" ]; then
+            echo -e "${GREEN}Supabase verified retry: ${next_sprint}#${next_task_num}${NC}" >&2
+            return 0
+        fi
+
+        echo -e "${RED}Supabase rejected retry: ${next_sprint}#${next_task_num}${NC}" >&2
+        _bg_handle_rejection "$next_sprint" "$next_task_num" "$AGENT_ID" "$SESSION_ID"
+    done
+
+    echo -e "${YELLOW}No candidates left after Supabase rejection${NC}" >&2
+}
+
+if [ "$NO_VERIFY" = false ] && [ "${_SUPABASE_CONFIGURED:-false}" = "true" ]; then
+    _bg_verify_claim &
 fi
 
 # --- Output JSON ---

@@ -4,8 +4,9 @@ set -e
 # =============================================================================
 # n2o — N2O Workflow Framework CLI
 # Usage:
+#   n2o setup [--framework-path <path>] [--no-auto-sync] [--auto-pull] [--name <name>]
 #   n2o init <project-path> [--interactive] [--register]
-#   n2o sync <project-path> [--dry-run] [--force] [--only=...]
+#   n2o sync <project-path> [--dry-run] [--force] [--quiet] [--only=...]
 #   n2o sync --all [--dry-run] [--force]
 #   n2o pin <project-path> [<version>] [--unpin]
 #   n2o check <project-path>
@@ -696,6 +697,154 @@ cmd_check() {
 }
 
 # =============================================================================
+# SETUP COMMAND — first-time developer config
+# =============================================================================
+
+GLOBAL_CONFIG_DIR="$HOME/.n2o"
+GLOBAL_CONFIG="$GLOBAL_CONFIG_DIR/config.json"
+
+cmd_setup() {
+  local framework_path=""
+  local auto_sync=""
+  local auto_pull=""
+  local dev_name=""
+  local non_interactive=false
+
+  # Parse flags
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --framework-path) framework_path="$2"; shift 2 ;;
+      --framework-path=*) framework_path="${1#--framework-path=}"; shift ;;
+      --no-auto-sync) auto_sync="false"; non_interactive=true; shift ;;
+      --auto-pull) auto_pull="true"; non_interactive=true; shift ;;
+      --name) dev_name="$2"; shift 2 ;;
+      --name=*) dev_name="${1#--name=}"; shift ;;
+      -*) log_error "Unknown option: $1"; exit 1 ;;
+      *) log_error "Unknown argument: $1"; exit 1 ;;
+    esac
+  done
+
+  log_header "N2O Developer Setup"
+
+  # If config exists, show current values
+  if [[ -f "$GLOBAL_CONFIG" ]]; then
+    log_info "Existing config found at $GLOBAL_CONFIG:"
+    echo ""
+    echo "  framework_path: $(jq -r '.framework_path // "(not set)"' "$GLOBAL_CONFIG")"
+    echo "  auto_sync:      $(jq -r '.auto_sync // "(not set)"' "$GLOBAL_CONFIG")"
+    echo "  auto_pull:      $(jq -r '.auto_pull // "(not set)"' "$GLOBAL_CONFIG")"
+    echo "  developer_name: $(jq -r '.developer_name // "(not set)"' "$GLOBAL_CONFIG")"
+    echo ""
+
+    if ! $non_interactive && [[ -z "$framework_path" ]]; then
+      read -rp "  Reconfigure? (y/N): " confirm
+      if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log_info "Keeping existing config."
+        return 0
+      fi
+    fi
+  fi
+
+  # 1. Framework path
+  if [[ -z "$framework_path" ]]; then
+    if $non_interactive; then
+      framework_path="$N2O_DIR"
+    else
+      framework_path=$(prompt_value "Framework path" "$N2O_DIR")
+    fi
+  fi
+
+  # Resolve to absolute path
+  framework_path="$(cd "$framework_path" 2>/dev/null && pwd || echo "$framework_path")"
+
+  # Validate: n2o-manifest.json must exist
+  if [[ ! -f "$framework_path/n2o-manifest.json" ]]; then
+    log_error "Not an N2O framework directory (missing n2o-manifest.json): $framework_path"
+    exit 1
+  fi
+
+  # Validate: must be a git repo
+  if ! git -C "$framework_path" rev-parse --git-dir &>/dev/null 2>&1; then
+    log_error "Not a git repository: $framework_path"
+    exit 1
+  fi
+
+  # Validate git access (can we fetch?)
+  log_info "Validating git access..."
+  if git -C "$framework_path" ls-remote --exit-code origin &>/dev/null 2>&1; then
+    log_success "Git access verified"
+  else
+    log_warn "Cannot reach remote (offline or no access). Continuing with local clone."
+  fi
+
+  # 2. Developer name
+  if [[ -z "$dev_name" ]]; then
+    local default_name
+    default_name=$(git config user.name 2>/dev/null || echo "")
+    if $non_interactive; then
+      dev_name="$default_name"
+    else
+      dev_name=$(prompt_value "Developer name" "$default_name")
+    fi
+  fi
+
+  # 3. Auto-sync preference
+  if [[ -z "$auto_sync" ]]; then
+    if $non_interactive; then
+      auto_sync="true"
+    else
+      read -rp "  Enable auto-sync on session start? (Y/n): " ans
+      if [[ "$ans" == "n" || "$ans" == "N" ]]; then
+        auto_sync="false"
+      else
+        auto_sync="true"
+      fi
+    fi
+  fi
+
+  # 4. Auto-pull preference
+  if [[ -z "$auto_pull" ]]; then
+    if $non_interactive; then
+      auto_pull="false"
+    else
+      echo ""
+      log_info "Auto-pull runs 'git pull --ff-only' before syncing."
+      log_info "Requires network — may exceed the 5s hook timeout on slow connections."
+      read -rp "  Enable auto-pull? (y/N): " ans
+      if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+        auto_pull="true"
+      else
+        auto_pull="false"
+      fi
+    fi
+  fi
+
+  # 5. Write config
+  mkdir -p "$GLOBAL_CONFIG_DIR"
+  jq -n \
+    --arg fp "$framework_path" \
+    --argjson as "$auto_sync" \
+    --argjson ap "$auto_pull" \
+    --arg dn "$dev_name" \
+    '{
+      framework_path: $fp,
+      auto_sync: $as,
+      auto_pull: $ap,
+      developer_name: $dn
+    }' > "$GLOBAL_CONFIG"
+
+  echo ""
+  log_success "Config written to $GLOBAL_CONFIG"
+  echo ""
+  echo "  framework_path: $framework_path"
+  echo "  auto_sync:      $auto_sync"
+  echo "  auto_pull:      $auto_pull"
+  echo "  developer_name: $dev_name"
+  echo ""
+  log_info "Projects will auto-sync from this framework on each Claude Code session start."
+}
+
+# =============================================================================
 # INIT COMMAND
 # =============================================================================
 
@@ -788,6 +937,29 @@ cmd_init() {
     # Make scripts executable
     find "$project_path/scripts" -name "*.sh" -exec chmod +x {} \;
     log_success "Copied scripts → scripts/"
+  fi
+
+  # Seed skill checksums for override protection
+  local checksums_file="$project_path/.pm/.skill-checksums.json"
+  echo '{}' > "$checksums_file"
+  local checksum_count=0
+  while IFS= read -r skill_file; do
+    local rel="${skill_file#$project_path/.claude/skills/}"
+    # Determine category from source directory
+    local skill_dir="${rel%%/*}"
+    local category=""
+    if [[ -d "$N2O_DIR/02-agents/$skill_dir" ]]; then
+      category="agents"
+    elif [[ -d "$N2O_DIR/03-patterns/$skill_dir" ]]; then
+      category="patterns"
+    fi
+    if [[ -n "$category" ]]; then
+      set_stored_checksum "$checksums_file" "$category/$rel" "$(file_checksum "$skill_file")"
+      ((checksum_count++)) || true
+    fi
+  done < <(find "$project_path/.claude/skills" -name "SKILL.md" -type f 2>/dev/null)
+  if [[ $checksum_count -gt 0 ]]; then
+    log_success "Seeded $checksum_count skill checksums for override protection"
   fi
 
   # ---- Step 3: Detect project & gather config ----
@@ -887,7 +1059,7 @@ cmd_init() {
   # ---- Step 6: Update .gitignore ----
   log_header "6. Updating .gitignore"
   local gitignore="$project_path/.gitignore"
-  local entries=(".pm/tasks.db" ".wm/" ".env.local" ".n2o-backup/" ".pm/.last_seen_version")
+  local entries=(".pm/tasks.db" ".wm/" ".env.local" ".n2o-backup/" ".pm/.last_seen_version" ".pm/.skill-checksums.json")
 
   if [[ ! -f "$gitignore" ]]; then
     touch "$gitignore"
@@ -1031,6 +1203,7 @@ cmd_sync() {
   local sync_all=false
   local force=false
   local sync_only=""
+  local quiet=false
 
   # Parse args
   while [[ $# -gt 0 ]]; do
@@ -1038,6 +1211,7 @@ cmd_sync() {
       --dry-run)  dry_run=true; shift ;;
       --all)      sync_all=true; shift ;;
       --force)    force=true; shift ;;
+      --quiet)    quiet=true; shift ;;
       --only=*)   sync_only="${1#--only=}"; shift ;;
       --only)     sync_only="$2"; shift 2 ;;
       -*)         log_error "Unknown option: $1"; exit 1 ;;
@@ -1059,22 +1233,24 @@ cmd_sync() {
     projects=$(jq -r '.projects[]' "$PROJECTS_FILE")
     local count
     count=$(echo "$projects" | wc -l)
-    log_header "Syncing $count registered projects (v$VERSION)"
+    if ! $quiet; then
+      log_header "Syncing $count registered projects (v$VERSION)"
+    fi
 
     while IFS= read -r p; do
-      echo ""
-      sync_project "$p" "$dry_run" "$force" "$sync_only"
+      if ! $quiet; then echo ""; fi
+      sync_project "$p" "$dry_run" "$force" "$sync_only" "$quiet"
     done <<< "$projects"
     return
   fi
 
   if [[ -z "$project_path" ]]; then
-    log_error "Usage: n2o sync <project-path> [--dry-run] [--force] or n2o sync --all [--dry-run] [--force]"
+    log_error "Usage: n2o sync <project-path> [--dry-run] [--force] [--quiet] or n2o sync --all [--dry-run] [--force]"
     exit 1
   fi
 
   project_path="$(cd "$project_path" && pwd)"
-  sync_project "$project_path" "$dry_run" "$force" "$sync_only"
+  sync_project "$project_path" "$dry_run" "$force" "$sync_only" "$quiet"
 }
 
 sync_project() {
@@ -1082,8 +1258,20 @@ sync_project() {
   local dry_run="$2"
   local force="${3:-false}"
   local sync_only="${4:-}"
+  local quiet="${5:-false}"
   local changes=0
   local skipped=0
+
+  # Global change counter (used by sync_directory and quiet summary)
+  SYNC_CHANGE_COUNT=0
+
+  # In quiet mode, shadow log functions to no-ops
+  if $quiet; then
+    log_info()    { :; }
+    log_success() { :; }
+    log_header()  { :; }
+    # log_warn and log_error still emit in quiet mode
+  fi
 
   if $dry_run; then
     log_header "DRY RUN — Sync: $project_path"
@@ -1127,6 +1315,10 @@ sync_project() {
   local backup_dir="$project_path/.n2o-backup/$(date +%Y%m%d-%H%M%S)"
   local schema_changed=false
 
+  # Set up sync context for sync_directory (checksum protection + force flag)
+  SYNC_FORCE="$force"
+  SYNC_CHECKSUMS_FILE="$project_path/.pm/.skill-checksums.json"
+
   # ---- Sync agents → .claude/skills/ ----
   log_header "Framework files"
 
@@ -1157,7 +1349,7 @@ sync_project() {
           cp "$N2O_DIR/.pm/schema.sql" "$project_path/.pm/schema.sql"
           log_success "Updated .pm/schema.sql"
         fi
-        ((changes++)) || true
+        ((SYNC_CHANGE_COUNT++)) || true
       else
         log_info "Unchanged: .pm/schema.sql"
       fi
@@ -1173,6 +1365,7 @@ sync_project() {
       else
         cp "$N2O_DIR/templates/rates.json" "$dest_rates"
         log_success "Updated .pm/rates.json"
+        ((SYNC_CHANGE_COUNT++)) || true
       fi
     fi
   fi
@@ -1266,24 +1459,65 @@ sync_project() {
   fi
 
   # ---- Summary ----
-  echo ""
-  if $dry_run; then
-    log_info "Dry run complete. No files were modified."
+  if $quiet; then
+    # Quiet mode: single summary line if files changed, nothing if up-to-date
+    if [[ ${SYNC_CHANGE_COUNT:-0} -gt 0 ]]; then
+      echo "N2O auto-synced: v${project_version} → v${VERSION} (${SYNC_CHANGE_COUNT} files updated)"
+    fi
   else
-    log_success "Sync complete. Version: $VERSION"
-    if [[ -d "$backup_dir" ]]; then
-      log_info "Backups saved to: .n2o-backup/$(basename "$backup_dir")/"
+    echo ""
+    if $dry_run; then
+      log_info "Dry run complete. No files were modified."
+    else
+      log_success "Sync complete. Version: $VERSION"
+      if [[ -d "$backup_dir" ]]; then
+        log_info "Backups saved to: .n2o-backup/$(basename "$backup_dir")/"
+      fi
     fi
   fi
 }
 
-# Sync a source directory into a destination, overwriting changed files
+# Read a checksum from the skill checksums file
+# Usage: get_stored_checksum <checksums_file> <key>
+get_stored_checksum() {
+  local checksums_file="$1"
+  local key="$2"
+  if [[ -f "$checksums_file" ]]; then
+    jq -r --arg k "$key" '.[$k] // ""' "$checksums_file" 2>/dev/null
+  fi
+}
+
+# Write/update a checksum in the skill checksums file
+# Usage: set_stored_checksum <checksums_file> <key> <checksum>
+set_stored_checksum() {
+  local checksums_file="$1"
+  local key="$2"
+  local checksum="$3"
+  local tmp
+  tmp=$(mktemp)
+  if [[ -f "$checksums_file" ]]; then
+    jq --arg k "$key" --arg v "$checksum" '.[$k] = $v' "$checksums_file" > "$tmp"
+  else
+    jq -n --arg k "$key" --arg v "$checksum" '{($k): $v}' > "$tmp"
+  fi
+  mv "$tmp" "$checksums_file"
+}
+
+# Sync a source directory into a destination, with checksum-based skill protection
 sync_directory() {
   local src="$1"
   local dest="$2"
   local backup_dir="$3"
   local dry_run="$4"
   local label="$5"
+  local force="${SYNC_FORCE:-false}"
+  local checksums_file="${SYNC_CHECKSUMS_FILE:-}"
+  local protect_skills=false
+
+  # Agents and patterns categories get checksum protection
+  if [[ "$label" == "agents" || "$label" == "patterns" ]]; then
+    protect_skills=true
+  fi
 
   mkdir -p "$dest"
 
@@ -1294,6 +1528,20 @@ sync_directory() {
 
     if [[ -f "$dest_file" ]]; then
       if ! diff -q "$src_file" "$dest_file" &>/dev/null; then
+        # Check skill protection for SKILL.md files in agents/patterns
+        if $protect_skills && [[ "$rel" == */SKILL.md ]] && ! $force && [[ -n "$checksums_file" ]]; then
+          local stored_checksum
+          stored_checksum=$(get_stored_checksum "$checksums_file" "$label/$rel")
+          local current_checksum
+          current_checksum=$(file_checksum "$dest_file")
+
+          if [[ -n "$stored_checksum" && "$current_checksum" != "$stored_checksum" ]]; then
+            # Locally modified — skip
+            log_warn "Skipping $rel (locally modified)"
+            continue
+          fi
+        fi
+
         if $dry_run; then
           log_warn "WOULD UPDATE: $label/$rel"
         else
@@ -1301,6 +1549,12 @@ sync_directory() {
           mkdir -p "$(dirname "$dest_file")"
           cp "$src_file" "$dest_file"
           log_success "Updated: $label/$rel"
+          ((SYNC_CHANGE_COUNT++)) || true
+
+          # Update stored checksum after overwrite
+          if $protect_skills && [[ "$rel" == */SKILL.md ]] && [[ -n "$checksums_file" ]]; then
+            set_stored_checksum "$checksums_file" "$label/$rel" "$(file_checksum "$dest_file")"
+          fi
         fi
       fi
     else
@@ -1310,6 +1564,12 @@ sync_directory() {
         mkdir -p "$(dirname "$dest_file")"
         cp "$src_file" "$dest_file"
         log_success "Added: $label/$rel"
+        ((SYNC_CHANGE_COUNT++)) || true
+
+        # Record checksum for new skill files
+        if $protect_skills && [[ "$rel" == */SKILL.md ]] && [[ -n "$checksums_file" ]]; then
+          set_stored_checksum "$checksums_file" "$label/$rel" "$(file_checksum "$dest_file")"
+        fi
       fi
     fi
   done < <(find "$src" -type f -not -name '.DS_Store')
@@ -1696,9 +1956,13 @@ cmd_stats() {
   local cost_7=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.estimated_cost_usd), 2), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-7 days');" 7)
   local cost_30=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.estimated_cost_usd), 2), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days');" 30)
 
-  # 7. Concurrency: avg sessions with overlapping time windows
-  local conc_7=$(_metric_window "SELECT COALESCE(ROUND(1.0 * COUNT(*) / NULLIF(COUNT(DISTINCT date(started_at)), 0), 1), '—') FROM transcripts WHERE parent_session_id IS NULL AND started_at >= datetime('now', '-7 days');" 7)
-  local conc_30=$(_metric_window "SELECT COALESCE(ROUND(1.0 * COUNT(*) / NULLIF(COUNT(DISTINCT date(started_at)), 0), 1), '—') FROM transcripts WHERE parent_session_id IS NULL AND started_at >= datetime('now', '-30 days');" 30)
+  # 7. Concurrency: peak overlapping at three tiers via schema views
+  local conc_tasks_7=$(_metric_window "SELECT COALESCE(MAX(active), 0) FROM concurrency_tasks WHERE ts >= datetime('now', '-7 days');" 7)
+  local conc_tasks_30=$(_metric_window "SELECT COALESCE(MAX(active), 0) FROM concurrency_tasks WHERE ts >= datetime('now', '-30 days');" 30)
+  local conc_sess_7=$(_metric_window "SELECT COALESCE(MAX(active), 0) FROM concurrency_sessions WHERE ts >= datetime('now', '-7 days');" 7)
+  local conc_sess_30=$(_metric_window "SELECT COALESCE(MAX(active), 0) FROM concurrency_sessions WHERE ts >= datetime('now', '-30 days');" 30)
+  local conc_agents_7=$(_metric_window "SELECT COALESCE(MAX(active), 0) FROM concurrency_agents WHERE ts >= datetime('now', '-7 days');" 7)
+  local conc_agents_30=$(_metric_window "SELECT COALESCE(MAX(active), 0) FROM concurrency_agents WHERE ts >= datetime('now', '-30 days');" 30)
 
   # 8. Brain cycles: avg user messages per task
   local brain_7=$(_metric_window "SELECT COALESCE(ROUND(AVG(tr.user_message_count), 1), '—') FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-7 days');" 7)
@@ -1712,7 +1976,9 @@ cmd_stats() {
   printf "  %-20s %10s %10s\n" "Predictability" "${pred_7}x" "${pred_30}x"
   printf "  %-20s %10s %10s\n" "Adoption" "${adopt_7}%" "${adopt_30}%"
   printf "  %-20s %10s %10s\n" "Cost/Task" "\$${cost_7}" "\$${cost_30}"
-  printf "  %-20s %10s %10s\n" "Concurrency" "${conc_7}/day" "${conc_30}/day"
+  printf "  %-20s %10s %10s\n" "Peak Tasks" "${conc_tasks_7}" "${conc_tasks_30}"
+  printf "  %-20s %10s %10s\n" "Peak Sessions" "${conc_sess_7}" "${conc_sess_30}"
+  printf "  %-20s %10s %10s\n" "Peak Agents" "${conc_agents_7}" "${conc_agents_30}"
   printf "  %-20s %10s %10s\n" "Brain Cycles" "${brain_7} msgs" "${brain_30} msgs"
 
   # === Section 1c: Skill Versions ===
@@ -2292,6 +2558,9 @@ main() {
   shift 2>/dev/null || true
 
   case "$command" in
+    setup)
+      cmd_setup "$@"
+      ;;
     init)
       cmd_init "$@"
       ;;
@@ -2322,11 +2591,14 @@ main() {
       echo "n2o — N2O Workflow Framework CLI (v$VERSION)"
       echo ""
       echo "Usage:"
+      echo "  n2o setup [--framework-path <path>] [--no-auto-sync] [--auto-pull] [--name <name>]"
+      echo "      First-time developer setup. Writes ~/.n2o/config.json."
+      echo ""
       echo "  n2o init <project-path> [--interactive] [--register]"
       echo "      Bootstrap a new project with N2O workflow files."
       echo ""
-      echo "  n2o sync <project-path> [--dry-run] [--force] [--only=agents,patterns,schema,scripts]"
-      echo "      Push framework updates to a project."
+      echo "  n2o sync <project-path> [--dry-run] [--force] [--quiet] [--only=agents,patterns,schema,scripts]"
+      echo "      Push framework updates to a project. --quiet emits single summary line."
       echo ""
       echo "  n2o sync --all [--dry-run] [--force]"
       echo "      Push framework updates to all registered projects."

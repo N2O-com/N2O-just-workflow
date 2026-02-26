@@ -845,6 +845,46 @@ SQL
   assert_sqlite_column_exists "$test_db" "tasks" "horizon"
 }
 
+test_seed_migrations_idempotent() {
+  # Create a test migration in the framework
+  create_test_migration "001-test-idempotent" "-- no-op for idempotency test"
+
+  # Init project (this seeds migrations)
+  "$N2O" init "$TEST_DIR"
+
+  local count_before
+  count_before=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT COUNT(*) FROM _migrations WHERE name='001-test-idempotent';")
+  assert_equals "1" "$count_before" "Should have 1 record after first init"
+
+  # Sync the project (which may call seed_migrations again)
+  echo "y" | "$N2O" sync "$TEST_DIR" 2>/dev/null || true
+
+  local count_after
+  count_after=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT COUNT(*) FROM _migrations WHERE name='001-test-idempotent';")
+  assert_equals "1" "$count_after" "Should still have exactly 1 record after sync (INSERT OR IGNORE)"
+
+  cleanup_test_migrations
+}
+
+test_seed_checksum_matches_file() {
+  # Create a test migration
+  create_test_migration "001-test-checksum-match" "SELECT 1; -- checksum test"
+
+  "$N2O" init "$TEST_DIR"
+
+  # Get the checksum stored in DB
+  local db_checksum
+  db_checksum=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT checksum FROM _migrations WHERE name='001-test-checksum-match';")
+
+  # Compute expected checksum using shasum (same as file_checksum)
+  local expected_checksum
+  expected_checksum=$(shasum -a 256 "$N2O_DIR/.pm/migrations/001-test-checksum-match.sql" | awk '{print $1}')
+
+  assert_equals "$expected_checksum" "$db_checksum" "Seeded checksum should match SHA256 of migration file"
+
+  cleanup_test_migrations
+}
+
 test_generate_correct_numbering() {
   "$N2O" init "$TEST_DIR"
 
@@ -928,6 +968,11 @@ run_test "Generate preserves DEFAULT values"                  test_generate_colu
 run_test "Generate with no changes creates no file"           test_generate_no_changes
 run_test "Generate produces valid SQL"                        test_generate_produces_valid_sql
 run_test "Generate uses correct numbering"                    test_generate_correct_numbering
+
+echo ""
+echo -e "${BOLD}Task 4: seed_migrations edge cases${NC}"
+run_test "Reinit does not duplicate seeded migrations"        test_seed_migrations_idempotent
+run_test "Seed checksum matches file_checksum"                test_seed_checksum_matches_file
 
 # Summary
 echo ""

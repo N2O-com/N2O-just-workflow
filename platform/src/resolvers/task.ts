@@ -1,18 +1,21 @@
 import type { Context } from "../context.js";
+import { queryAll, queryOne } from "../db-adapter.js";
 import { mapTask, mapDeveloper, mapEvent, mapTranscript } from "./mappers.js";
 
 export { mapTask, mapEvent, mapTranscript };
 
 export const taskResolvers = {
   Query: {
-    task: (_: any, args: { sprint: string; taskNum: number }, ctx: Context) => {
-      const row = ctx.db
-        .prepare("SELECT * FROM tasks WHERE sprint = ? AND task_num = ?")
-        .get(args.sprint, args.taskNum);
+    task: async (_: any, args: { sprint: string; taskNum: number }, ctx: Context) => {
+      const row = await queryOne(
+        ctx.db,
+        "SELECT * FROM tasks WHERE sprint = ? AND task_num = ?",
+        [args.sprint, args.taskNum]
+      );
       return mapTask(row);
     },
 
-    tasks: (
+    tasks: async (
       _: any,
       args: {
         sprint?: string;
@@ -45,19 +48,17 @@ export const taskResolvers = {
       const where = conditions.length
         ? `WHERE ${conditions.join(" AND ")}`
         : "";
-      return ctx.db
-        .prepare(
-          `SELECT * FROM tasks ${where} ORDER BY sprint, priority ASC NULLS LAST, task_num`
-        )
-        .all(...params)
-        .map(mapTask);
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM tasks ${where} ORDER BY sprint, priority ASC NULLS LAST, task_num`,
+        params
+      );
+      return rows.map(mapTask);
     },
 
-    availableTasks: (_: any, __: any, ctx: Context) => {
-      return ctx.db
-        .prepare("SELECT * FROM available_tasks")
-        .all()
-        .map(mapTask);
+    availableTasks: async (_: any, __: any, ctx: Context) => {
+      const rows = await queryAll(ctx.db, "SELECT * FROM available_tasks");
+      return rows.map(mapTask);
     },
   },
 
@@ -68,29 +69,29 @@ export const taskResolvers = {
       return mapDeveloper(row);
     },
 
-    dependencies: (task: any, _: any, ctx: Context) => {
-      return ctx.db
-        .prepare(
-          `SELECT t.* FROM tasks t
-           JOIN task_dependencies d ON t.sprint = d.depends_on_sprint AND t.task_num = d.depends_on_task
-           WHERE d.sprint = ? AND d.task_num = ?`
-        )
-        .all(task.sprint, task.taskNum)
-        .map(mapTask);
+    dependencies: async (task: any, _: any, ctx: Context) => {
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT t.* FROM tasks t
+         JOIN task_dependencies d ON t.sprint = d.depends_on_sprint AND t.task_num = d.depends_on_task
+         WHERE d.sprint = ? AND d.task_num = ?`,
+        [task.sprint, task.taskNum]
+      );
+      return rows.map(mapTask);
     },
 
-    dependents: (task: any, _: any, ctx: Context) => {
-      return ctx.db
-        .prepare(
-          `SELECT t.* FROM tasks t
-           JOIN task_dependencies d ON t.sprint = d.sprint AND t.task_num = d.task_num
-           WHERE d.depends_on_sprint = ? AND d.depends_on_task = ?`
-        )
-        .all(task.sprint, task.taskNum)
-        .map(mapTask);
+    dependents: async (task: any, _: any, ctx: Context) => {
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT t.* FROM tasks t
+         JOIN task_dependencies d ON t.sprint = d.sprint AND t.task_num = d.task_num
+         WHERE d.depends_on_sprint = ? AND d.depends_on_task = ?`,
+        [task.sprint, task.taskNum]
+      );
+      return rows.map(mapTask);
     },
 
-    events: (
+    events: async (
       task: any,
       args: { eventType?: string; limit?: number },
       ctx: Context
@@ -106,16 +107,17 @@ export const taskResolvers = {
         sql += ` LIMIT ?`;
         params.push(args.limit);
       }
-      return ctx.db.prepare(sql).all(...params).map(mapEvent);
+      const rows = await queryAll(ctx.db, sql, params);
+      return rows.map(mapEvent);
     },
 
-    transcripts: (task: any, _: any, ctx: Context) => {
-      return ctx.db
-        .prepare(
-          `SELECT * FROM transcripts WHERE sprint = ? AND task_num = ? ORDER BY started_at`
-        )
-        .all(task.sprint, task.taskNum)
-        .map(mapTranscript);
+    transcripts: async (task: any, _: any, ctx: Context) => {
+      const rows = await queryAll(
+        ctx.db,
+        `SELECT * FROM transcripts WHERE sprint = ? AND task_num = ? ORDER BY started_at`,
+        [task.sprint, task.taskNum]
+      );
+      return rows.map(mapTranscript);
     },
 
     actualMinutes: (task: any) => {

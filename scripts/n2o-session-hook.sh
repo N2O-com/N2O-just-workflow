@@ -28,6 +28,34 @@ fi
 
 output=""
 
+# --- Step 0.5: Auto-sync framework (before version notification) ---
+global_config="$HOME/.n2o/config.json"
+if [[ -f "$global_config" ]]; then
+  auto_sync=$(jq -r '.auto_sync // false' "$global_config" 2>/dev/null)
+  framework_path=$(jq -r '.framework_path // ""' "$global_config" 2>/dev/null)
+
+  if [[ "$auto_sync" == "true" && -n "$framework_path" && -d "$framework_path" ]]; then
+    # Skip if project is version-pinned
+    pinned=$(jq -r '.n2o_version_pinned // ""' .pm/config.json 2>/dev/null)
+    project_ver=$(jq -r '.n2o_version // ""' .pm/config.json 2>/dev/null)
+    framework_ver=$(jq -r '.version // ""' "$framework_path/n2o-manifest.json" 2>/dev/null)
+
+    if [[ -z "$pinned" && -n "$framework_ver" && "$project_ver" != "$framework_ver" ]]; then
+      # Optional auto-pull
+      auto_pull=$(jq -r '.auto_pull // false' "$global_config" 2>/dev/null)
+      if [[ "$auto_pull" == "true" ]]; then
+        git -C "$framework_path" pull --ff-only 2>/dev/null || true
+      fi
+
+      # Run quiet sync
+      sync_output=$("$framework_path/n2o" sync "$cwd" --quiet 2>/dev/null) || true
+      if [[ -n "$sync_output" ]]; then
+        output="${output}${sync_output}\n"
+      fi
+    fi
+  fi
+fi
+
 # --- Step 0: Developer identity and concurrent sessions ---
 developer_name=$(jq -r '.developer_name // ""' .pm/config.json 2>/dev/null)
 if [[ -z "$developer_name" ]]; then
@@ -217,4 +245,12 @@ fi
 if [[ -n "$output" ]]; then
   # Strip any ANSI escape codes for clean context injection
   echo -e "$output" | sed $'s/\033\\[[0-9;]*m//g'
+fi
+
+# --- Step 4: Collect stale transcripts from sibling sessions (background) ---
+# If another session on this project is still running, its JSONL has grown
+# since last collection. Re-collect in background to keep data fresh.
+COLLECT_SCRIPT="$SCRIPT_DIR/../collect-transcripts.sh"
+if [[ -f "$COLLECT_SCRIPT" ]]; then
+  bash "$COLLECT_SCRIPT" --quiet 2>/dev/null &
 fi

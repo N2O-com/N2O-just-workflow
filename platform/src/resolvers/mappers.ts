@@ -23,7 +23,7 @@ export function mapTask(row: any) {
     completedAt: row.completed_at,
     reversions: row.reversions,
     testingPosture: row.testing_posture,
-    verified: row.verified === 1,
+    verified: row.verified === true || row.verified === 1,
     commitHash: row.commit_hash,
     _owner: row.owner,
   };

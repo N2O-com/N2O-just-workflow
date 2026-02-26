@@ -25,6 +25,39 @@ export const typeDefs = `#graphql
 
     # Transcripts
     transcripts(sprint: String, taskNum: Int, sessionId: String): [Transcript!]!
+
+    # ── Analytics ──────────────────────────────────────────────
+
+    # Skill analytics
+    skillUsage: [SkillUsage!]!
+    skillTokenUsage(sprint: String): [SkillTokenUsage!]!
+    skillVersionTokenUsage(skillName: String): [SkillVersionTokenUsage!]!
+    skillDuration(sprint: String): [SkillDuration!]!
+    skillVersionDuration(skillName: String): [SkillVersionDuration!]!
+    skillPrecision(sprint: String): [SkillPrecision!]!
+    skillVersionPrecision(skillName: String): [SkillVersionPrecision!]!
+
+    # Velocity analytics
+    developerLearningRate(owner: String): [LearningRate!]!
+    phaseTimingDistribution(sprint: String): [PhaseTimingDistribution!]!
+    tokenEfficiencyTrend: [TokenEfficiency!]!
+    blowUpFactors(sprint: String): [BlowUpFactor!]!
+
+    # Estimation analytics
+    estimationAccuracy(owner: String): [EstimationAccuracy!]!
+    estimationAccuracyByType: [EstimationAccuracyByType!]!
+    estimationAccuracyByComplexity: [EstimationAccuracyByComplexity!]!
+
+    # Quality analytics
+    developerQuality(owner: String): [DeveloperQuality!]!
+    commonAuditFindings(owner: String): [AuditFindings!]!
+    reversionHotspots: [ReversionHotspot!]!
+
+    # Sprint analytics
+    sprintVelocity(sprint: String): [SprintVelocity!]!
+
+    # Session timeline (for Gantt chart)
+    sessionTimeline(developer: String, dateFrom: String, dateTo: String): [SessionTimelineEntry!]!
   }
 
   type Mutation {
@@ -244,5 +277,177 @@ export const typeDefs = `#graphql
     taskNum: Int
     summary: String
     metadata: String
+  }
+
+  # ── Analytics Types ─────────────────────────────────────────
+
+  type SkillUsage {
+    toolName: String!
+    invocations: Int!
+    sessions: Int!
+    firstUsed: String
+    lastUsed: String
+  }
+
+  type SkillTokenUsage {
+    skillName: String
+    sprint: String
+    invocations: Int!
+    totalInputTokens: Int!
+    totalOutputTokens: Int!
+    avgTokensPerCall: Float
+  }
+
+  type SkillVersionTokenUsage {
+    skillName: String
+    skillVersion: String
+    invocations: Int!
+    totalInputTokens: Int!
+    totalOutputTokens: Int!
+    avgTokensPerCall: Float
+  }
+
+  type SkillDuration {
+    skillName: String
+    sprint: String
+    taskNum: Int
+    seconds: Float
+  }
+
+  type SkillVersionDuration {
+    skillName: String
+    skillVersion: String
+    invocations: Int!
+    avgSeconds: Float
+    minSeconds: Float
+    maxSeconds: Float
+  }
+
+  type SkillPrecision {
+    sprint: String
+    taskNum: Int
+    filesRead: Int!
+    filesModified: Int!
+    explorationRatio: Float
+  }
+
+  type SkillVersionPrecision {
+    skillName: String
+    skillVersion: String
+    tasks: Int!
+    avgExplorationRatio: Float
+  }
+
+  type LearningRate {
+    owner: String!
+    sprint: String!
+    tasks: Int!
+    avgBlowUpRatio: Float
+  }
+
+  type PhaseTimingDistribution {
+    sprint: String
+    taskNum: Int
+    phase: String!
+    seconds: Float!
+    pctOfTotal: Float
+  }
+
+  type TokenEfficiency {
+    sprint: String
+    complexity: String
+    tasks: Int!
+    avgTokensPerTask: Float
+  }
+
+  type BlowUpFactor {
+    sprint: String!
+    taskNum: Int!
+    title: String
+    type: String
+    complexity: String
+    estimatedHours: Float
+    actualHours: Float
+    blowUpRatio: Float
+    reversions: Int
+    testingPosture: String
+  }
+
+  type EstimationAccuracy {
+    owner: String!
+    tasksWithEstimates: Int!
+    avgEstimated: Float
+    avgActual: Float
+    blowUpRatio: Float
+    avgErrorHours: Float
+  }
+
+  type EstimationAccuracyByType {
+    type: String!
+    tasks: Int!
+    avgEstimated: Float
+    avgActual: Float
+    blowUpRatio: Float
+  }
+
+  type EstimationAccuracyByComplexity {
+    complexity: String!
+    tasks: Int!
+    avgEstimated: Float
+    avgActual: Float
+    blowUpRatio: Float
+  }
+
+  type DeveloperQuality {
+    owner: String!
+    totalTasks: Int!
+    totalReversions: Int!
+    reversionsPerTask: Float
+    aGrades: Int!
+    aGradePct: Float
+  }
+
+  type AuditFindings {
+    owner: String!
+    fakeTestIncidents: Int!
+    patternViolations: Int!
+    belowAGrade: Int!
+    totalReversions: Int!
+    totalTasks: Int!
+  }
+
+  type ReversionHotspot {
+    type: String
+    complexity: String
+    tasks: Int!
+    totalReversions: Int!
+    avgReversions: Float
+    aGradeRate: Float
+  }
+
+  type SprintVelocity {
+    sprint: String!
+    completedTasks: Int!
+    avgHoursPerTask: Float
+    totalHours: Float
+  }
+
+  type SessionTimelineEntry {
+    sessionId: String!
+    parentSessionId: String
+    developer: String
+    sprint: String
+    taskNum: Int
+    taskTitle: String
+    skillName: String
+    startedAt: String!
+    endedAt: String
+    durationMinutes: Float
+    totalInputTokens: Int
+    totalOutputTokens: Int
+    toolCallCount: Int
+    messageCount: Int
+    model: String
+    subagents: [SessionTimelineEntry!]!
   }
 `;

@@ -2,7 +2,7 @@ import { ApolloServer } from "@apollo/server";
 import { startStandaloneServer } from "@apollo/server/standalone";
 import { typeDefs } from "./schema/typeDefs.js";
 import { resolvers } from "./resolvers/index.js";
-import { getDb, closeDb } from "./db.js";
+import { getPool, closePool } from "./db.js";
 import { createLoaders } from "./loaders.js";
 
 const PORT = parseInt(process.env.PORT ?? "4000");
@@ -12,27 +12,26 @@ const server = new ApolloServer({
   resolvers,
 });
 
+const pool = getPool();
+
 const { url } = await startStandaloneServer(server, {
   listen: { port: PORT },
-  context: async () => {
-    const db = getDb();
-    return {
-      db,
-      loaders: createLoaders(db),
-    };
-  },
+  context: async () => ({
+    db: pool,
+    loaders: createLoaders(pool),
+  }),
 });
 
 console.log(`N2O Data Platform API ready at ${url}`);
 
 // Graceful shutdown
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   console.log("\nShutting down...");
-  closeDb();
+  await closePool();
   process.exit(0);
 });
 
-process.on("SIGTERM", () => {
-  closeDb();
+process.on("SIGTERM", async () => {
+  await closePool();
   process.exit(0);
 });

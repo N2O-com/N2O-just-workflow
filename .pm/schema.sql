@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Git tracking (set by commit-task.sh script)
     commit_hash TEXT,                   -- Git commit hash after task completion
     merged_at DATETIME,                 -- When task branch was merged into base (set by merge-queue.sh)
+    lines_added INTEGER,                -- Lines added in commit (from git diff --numstat)
+    lines_removed INTEGER,              -- Lines removed in commit (from git diff --numstat)
 
     -- External PM tool sync (Linear, Asana, Jira, etc.)
     external_id TEXT,                   -- Linear issue ID, Asana task ID, etc.
@@ -326,6 +328,30 @@ CREATE TABLE IF NOT EXISTS transcripts (
     ended_at DATETIME,
     sprint TEXT,
     task_num INTEGER,
+    user_message_timestamps TEXT,       -- JSON array of user message ISO timestamps
+    cache_read_tokens INTEGER DEFAULT 0,      -- Sum of cache_read_input_tokens from assistant messages
+    cache_creation_tokens INTEGER DEFAULT 0,  -- Sum of cache_creation_input_tokens from assistant messages
+    total_user_content_length INTEGER DEFAULT 0,  -- Sum of character length of all user message content
+    -- Comprehensive JSONL extraction (migration 006)
+    stop_reason_counts TEXT,               -- JSON: {"end_turn": N, "max_tokens": N, "tool_use": N}
+    thinking_message_count INTEGER DEFAULT 0,  -- Number of assistant messages with thinking blocks
+    thinking_total_length INTEGER DEFAULT 0,   -- Total character length of all thinking content
+    service_tier TEXT,                     -- Service tier from assistant message usage (e.g. "standard")
+    has_sidechain INTEGER DEFAULT 0,       -- 1 if any user message has isSidechain=true
+    system_error_count INTEGER DEFAULT 0,  -- Count of system messages with subtype="error"
+    system_retry_count INTEGER DEFAULT 0,  -- Count of system messages with subtype="retry"
+    avg_turn_duration_ms INTEGER,          -- Average turn duration from system subtype="turn_duration"
+    tool_result_error_count INTEGER DEFAULT 0,  -- Count of toolUseResult entries with isError=true
+    compaction_count INTEGER DEFAULT 0,    -- Count of system messages with subtype="compaction"
+    -- Session context and additional signals (migration 007)
+    cwd TEXT,                              -- Working directory from first message with cwd field
+    git_branch TEXT,                       -- Git branch from first message with gitBranch field
+    assistant_message_timestamps TEXT,     -- JSON array of assistant message ISO timestamps
+    background_task_count INTEGER DEFAULT 0,  -- Count of queue-operation messages (async work)
+    web_search_count INTEGER DEFAULT 0,    -- Count of web search requests from server_tool_use
+    synced_at DATETIME,                    -- When this row was last synced to Supabase (NULL = not synced)
+    sync_attempts INTEGER DEFAULT 0,       -- Number of failed sync attempts (skip after 5)
+    sync_error TEXT,                       -- Last sync error message (NULL = no error)
     FOREIGN KEY (sprint, task_num) REFERENCES tasks(sprint, task_num)
 );
 
@@ -489,6 +515,19 @@ WHERE started_at IS NOT NULL
     AND estimated_hours IS NOT NULL
     AND (julianday(completed_at) - julianday(started_at)) * 24 > estimated_hours * 2;
 
+-- Task trajectory: Phase sequence and audit reversions per task
+CREATE VIEW IF NOT EXISTS task_trajectory AS
+SELECT
+    sprint, task_num,
+    COUNT(*) as total_phases,
+    SUM(CASE WHEN phase = 'FIX_AUDIT' THEN 1 ELSE 0 END) as audit_reversions,
+    MIN(CASE WHEN phase = 'RED' THEN timestamp END) as first_red,
+    MAX(CASE WHEN phase IN ('COMMIT', 'REPORT') THEN timestamp END) as completed_at,
+    GROUP_CONCAT(phase, ' -> ') as trajectory
+FROM workflow_events
+WHERE event_type = 'phase_entered'
+GROUP BY sprint, task_num;
+
 -- Skill versions: Track version history per skill
 CREATE TABLE IF NOT EXISTS skill_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -586,6 +625,114 @@ CREATE TABLE IF NOT EXISTS developer_context (
 
 CREATE INDEX IF NOT EXISTS idx_developer_context_lookup
     ON developer_context(developer, recorded_at DESC);
+
+-- Concurrency timelines: running count at every boundary event (agent start/end).
+-- Each row = a state change. Query any point in time with:
+--   SELECT active FROM concurrency_agents WHERE ts <= '<timestamp>' ORDER BY ts DESC LIMIT 1;
+
+-- Agent-level concurrency (all transcripts: primary sessions + subagents)
+CREATE VIEW IF NOT EXISTS concurrency_agents AS
+SELECT ts, delta, SUM(delta) OVER (ORDER BY ts, delta DESC) as active
+FROM (
+    SELECT started_at as ts, 1 as delta FROM transcripts WHERE started_at IS NOT NULL
+    UNION ALL
+    SELECT ended_at as ts, -1 as delta FROM transcripts WHERE ended_at IS NOT NULL
+);
+
+-- Session-level concurrency (primary sessions only = terminals)
+CREATE VIEW IF NOT EXISTS concurrency_sessions AS
+SELECT ts, delta, SUM(delta) OVER (ORDER BY ts, delta DESC) as active
+FROM (
+    SELECT started_at as ts, 1 as delta FROM transcripts
+    WHERE parent_session_id IS NULL AND started_at IS NOT NULL
+    UNION ALL
+    SELECT ended_at as ts, -1 as delta FROM transcripts
+    WHERE parent_session_id IS NULL AND ended_at IS NOT NULL
+);
+
+-- Task-level concurrency (overlapping task work windows)
+CREATE VIEW IF NOT EXISTS concurrency_tasks AS
+SELECT ts, delta, SUM(delta) OVER (ORDER BY ts, delta DESC) as active
+FROM (
+    SELECT started_at as ts, 1 as delta FROM tasks WHERE started_at IS NOT NULL
+    UNION ALL
+    SELECT completed_at as ts, -1 as delta FROM tasks WHERE completed_at IS NOT NULL
+);
+
+-- Brain cycles per task: user messages as proxy for decision loops/steering needed
+-- Higher counts suggest more complex or poorly-scoped tasks
+CREATE VIEW IF NOT EXISTS brain_cycles_per_task AS
+SELECT
+    t.sprint,
+    t.task_num,
+    t.title,
+    t.complexity,
+    tr.user_message_count as brain_cycles,
+    tr.total_user_content_length as total_prompt_chars,
+    CASE
+        WHEN tr.user_message_count > 0 THEN ROUND(1.0 * tr.total_user_content_length / tr.user_message_count)
+        ELSE 0
+    END as avg_chars_per_prompt,
+    tr.compaction_count,
+    json_extract(tr.stop_reason_counts, '$.max_tokens') as max_token_hits
+FROM tasks t
+JOIN transcripts tr ON tr.sprint = t.sprint AND tr.task_num = t.task_num
+WHERE tr.user_message_count > 0;
+
+-- Context loading time: ratio of exploration (Read/Glob/Grep) before first Edit/Write
+-- Lower ratios suggest better familiarity; higher ratios mean more exploration needed
+CREATE VIEW IF NOT EXISTS context_loading_time AS
+SELECT
+    we.sprint,
+    we.task_num,
+    COUNT(CASE WHEN we.tool_name IN ('Read', 'Glob', 'Grep') AND we.id < first_write.first_write_id THEN 1 END) as reads_before_first_write,
+    COUNT(CASE WHEN we.tool_name IN ('Read', 'Glob', 'Grep') THEN 1 END) as total_reads,
+    COUNT(CASE WHEN we.tool_name IN ('Edit', 'Write') THEN 1 END) as total_writes,
+    CASE
+        WHEN COUNT(CASE WHEN we.tool_name IN ('Edit', 'Write') THEN 1 END) > 0
+        THEN ROUND(1.0 *
+            COUNT(CASE WHEN we.tool_name IN ('Read', 'Glob', 'Grep') AND we.id < first_write.first_write_id THEN 1 END) /
+            COUNT(CASE WHEN we.tool_name IN ('Edit', 'Write') THEN 1 END)
+        , 2)
+        ELSE NULL
+    END as context_load_ratio
+FROM workflow_events we
+LEFT JOIN (
+    SELECT sprint, task_num, MIN(id) as first_write_id
+    FROM workflow_events
+    WHERE event_type = 'tool_call' AND tool_name IN ('Edit', 'Write')
+    GROUP BY sprint, task_num
+) first_write ON we.sprint = first_write.sprint AND we.task_num = first_write.task_num
+WHERE we.event_type = 'tool_call'
+GROUP BY we.sprint, we.task_num;
+
+-- Session health: per-session summary of errors, retries, compactions, and thinking usage
+-- High error/retry counts or compaction events signal degraded session quality
+CREATE VIEW IF NOT EXISTS session_health AS
+SELECT
+    tr.session_id,
+    tr.sprint,
+    tr.task_num,
+    tr.model,
+    tr.system_error_count,
+    tr.system_retry_count,
+    tr.compaction_count,
+    tr.tool_result_error_count,
+    tr.thinking_message_count,
+    tr.thinking_total_length,
+    tr.has_sidechain,
+    tr.avg_turn_duration_ms,
+    tr.service_tier,
+    tr.stop_reason_counts,
+    (tr.system_error_count + tr.system_retry_count + tr.tool_result_error_count) as total_errors,
+    CASE
+        WHEN (tr.system_error_count + tr.system_retry_count + tr.tool_result_error_count) = 0
+            AND tr.compaction_count = 0 THEN 'healthy'
+        WHEN tr.compaction_count > 0 THEN 'context_pressure'
+        WHEN (tr.system_error_count + tr.system_retry_count) > 2 THEN 'degraded'
+        ELSE 'minor_issues'
+    END as health_status
+FROM transcripts tr;
 
 -- Migration tracking: records which schema migrations have been applied
 CREATE TABLE IF NOT EXISTS _migrations (

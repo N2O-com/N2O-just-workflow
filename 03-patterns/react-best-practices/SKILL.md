@@ -1,5 +1,6 @@
 ---
 name: react-best-practices
+version: "1.0.0"
 description: "Consult this skill automatically when writing, reviewing, or refactoring React or Next.js code. Use as an ambient guide — check these patterns whenever creating components, data fetching hooks, server components, client components, or optimizing bundle size. Triggers: review my React code, check performance, optimize React, Next.js best practices, component performance, bundle optimization, react patterns, writing React components, refactoring React code."
 ---
 

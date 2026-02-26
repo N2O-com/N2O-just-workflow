@@ -1,5 +1,6 @@
 ---
 name: tdd-agent
+version: "1.0.0"
 description: "Use when the user wants to implement sprint tasks using TDD. Triggers: implement task, tdd, test-driven development, task execution, implement feature, start working on task, pick next task, let's implement, build this feature, write tests first, red green refactor. This skill drives the RED → GREEN → REFACTOR → AUDIT → CODIFY → COMMIT cycle. NOT for planning (use pm-agent) or bug investigation (use bug-workflow)."
 ---
 
@@ -748,8 +749,10 @@ WHERE id = ${taskId};"
 **Target: A grade in Testing Posture.** Loop until achieved (max 2 iterations).
 
 ```bash
-sqlite3 .pm/tasks.db "INSERT INTO workflow_events (sprint, task_num, event_type, skill_name, phase, session_id) VALUES ('${sprint}', ${taskNum}, 'phase_entered', 'tdd-agent', 'FIX_AUDIT', '$(echo $CLAUDE_SESSION_ID)');"
+sqlite3 .pm/tasks.db "INSERT INTO workflow_events (sprint, task_num, event_type, skill_name, phase, session_id, metadata) VALUES ('${sprint}', ${taskNum}, 'phase_entered', 'tdd-agent', 'FIX_AUDIT', '$(echo $CLAUDE_SESSION_ID)', '{\"reason\": \"${auditGrade}\", \"findings\": \"${auditFindings}\"}');"
 ```
+
+**Metadata fields**: `reason` is the audit grade that triggered the fix (e.g., "B", "C"), and `findings` lists the specific issues found (e.g., "2 fake tests, 1 weak assertion").
 
 ### A Grade Definition
 

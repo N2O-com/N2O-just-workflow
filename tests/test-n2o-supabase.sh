@@ -226,6 +226,7 @@ test_schema_valid_sql() {
   assert_contains "$schema" "CREATE TABLE IF NOT EXISTS agents" "Schema should define agents table"
   assert_contains "$schema" "CREATE TABLE IF NOT EXISTS activity_log" "Schema should define activity_log table"
   assert_contains "$schema" "CREATE TABLE IF NOT EXISTS developer_twins" "Schema should define developer_twins table"
+  assert_contains "$schema" "CREATE TABLE IF NOT EXISTS transcripts" "Schema should define transcripts table"
 }
 
 test_schema_has_realtime() {
@@ -523,6 +524,195 @@ test_http_error_handling() {
   fi
 }
 
+# -----------------------------------------------------------------------------
+# Transcript sync tests
+# -----------------------------------------------------------------------------
+
+# Helper: insert a test transcript into local SQLite
+insert_test_transcript() {
+  local db_path="$1"
+  local session_id="${2:-test-session-001}"
+  sqlite3 "$db_path" "
+    INSERT INTO transcripts (
+      session_id, file_path, message_count, user_message_count,
+      assistant_message_count, tool_call_count, total_input_tokens,
+      total_output_tokens, cache_read_tokens, cache_creation_tokens,
+      estimated_cost_usd, model, started_at, ended_at,
+      sprint, task_num, total_user_content_length,
+      stop_reason_counts, thinking_message_count, thinking_total_length,
+      has_sidechain, system_error_count, system_retry_count,
+      tool_result_error_count, compaction_count,
+      cwd, git_branch, background_task_count, web_search_count
+    ) VALUES (
+      '$session_id', '/tmp/test.jsonl', 20, 8,
+      12, 15, 50000,
+      25000, 30000, 5000,
+      0.475, 'claude-sonnet-4-5-20250929', '2025-06-01T10:00:00Z', '2025-06-01T10:30:00Z',
+      'test-sprint', 1, 1200,
+      '{\"end_turn\":8,\"tool_use\":4}', 3, 5000,
+      0, 1, 0,
+      2, 0,
+      '/home/dev/project', 'task/test-sprint-1', 1, 0
+    );
+  "
+}
+
+test_upsert_transcript() {
+  source_client
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db"
+  local result
+  result=$(supabase_upsert_transcript "test-session-001" "$TEST_DIR/.pm/tasks.db" "test-developer")
+  assert_curl_called "POST" "rest/v1/transcripts" "Should POST to transcripts endpoint"
+  assert_file_contains "$MOCK_CURL_LOG" "test-session-001" "Request should contain session_id"
+  assert_file_contains "$MOCK_CURL_LOG" "test-developer" "Request should contain developer"
+}
+
+test_upsert_transcript_sets_synced_at() {
+  source_client
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db"
+
+  # Before sync: synced_at should be NULL
+  local before
+  before=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT synced_at FROM transcripts WHERE session_id='test-session-001';")
+  assert_equals "" "$before" "synced_at should be NULL before sync"
+
+  supabase_upsert_transcript "test-session-001" "$TEST_DIR/.pm/tasks.db" "dev" >/dev/null
+
+  # After sync: synced_at should be populated
+  local after
+  after=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT synced_at FROM transcripts WHERE session_id='test-session-001';")
+  if [[ -z "$after" ]]; then
+    echo "    ASSERT FAILED: synced_at should be set after sync" >&2
+    return 1
+  fi
+}
+
+test_upsert_transcript_not_found() {
+  source_client
+  local rc=0
+  supabase_upsert_transcript "nonexistent-session" "$TEST_DIR/.pm/tasks.db" 2>/dev/null || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    ASSERT FAILED: Should fail for nonexistent transcript" >&2
+    return 1
+  fi
+}
+
+test_sync_all_transcripts_diff() {
+  source_client
+  # Insert 3 transcripts, mark 1 as already synced
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-a"
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-b"
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-c"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "UPDATE transcripts SET synced_at = datetime('now') WHERE session_id = 'session-a';"
+
+  supabase_sync_all_transcripts "$TEST_DIR/.pm/tasks.db" "dev" 2>/dev/null
+
+  # session-a was already synced, so only session-b and session-c should be POSTed
+  # All 3 should now have synced_at set
+  local synced_count
+  synced_count=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT COUNT(*) FROM transcripts WHERE synced_at IS NOT NULL;")
+  assert_equals "3" "$synced_count" "All transcripts should be synced after bulk sync"
+
+  # The curl log should contain session-b and session-c but not necessarily session-a again
+  assert_file_contains "$MOCK_CURL_LOG" "session-b" "Should sync unsynced session-b"
+  assert_file_contains "$MOCK_CURL_LOG" "session-c" "Should sync unsynced session-c"
+}
+
+test_sync_all_transcripts_nothing_to_sync() {
+  source_client
+  # Insert 1 transcript already synced
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-synced"
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "UPDATE transcripts SET synced_at = datetime('now') WHERE session_id = 'session-synced';"
+
+  local output
+  output=$(supabase_sync_all_transcripts "$TEST_DIR/.pm/tasks.db" "dev" 2>&1)
+  assert_contains "$output" "already synced" "Should report nothing to sync"
+}
+
+test_schema_has_transcripts_columns() {
+  local schema
+  schema=$(cat "$SUPABASE_SCHEMA")
+  assert_contains "$schema" "developer TEXT" "Supabase transcripts should have developer column"
+  assert_contains "$schema" "machine_id TEXT" "Supabase transcripts should have machine_id column"
+  assert_contains "$schema" "stop_reason_counts JSONB" "Supabase transcripts should have stop_reason_counts"
+  assert_contains "$schema" "idx_transcripts_developer" "Should index transcripts by developer"
+}
+
+test_schema_has_developer_summary_view() {
+  local schema
+  schema=$(cat "$SUPABASE_SCHEMA")
+  assert_contains "$schema" "developer_session_summary" "Should have developer_session_summary view"
+}
+
+test_upsert_transcript_records_failure() {
+  # Mock: return HTTP 400 to simulate Supabase rejection
+  export MOCK_HTTP_CODE="400"
+  source_client
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-bad"
+
+  local rc=0
+  supabase_upsert_transcript "session-bad" "$TEST_DIR/.pm/tasks.db" "dev" 2>/dev/null || rc=$?
+
+  # Should fail
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    ASSERT FAILED: Should fail on HTTP 400" >&2
+    return 1
+  fi
+
+  # sync_attempts should be incremented
+  local attempts
+  attempts=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT sync_attempts FROM transcripts WHERE session_id='session-bad';")
+  assert_equals "1" "$attempts" "sync_attempts should be 1 after first failure"
+
+  # sync_error should be populated
+  local error
+  error=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT sync_error FROM transcripts WHERE session_id='session-bad';")
+  if [[ -z "$error" ]]; then
+    echo "    ASSERT FAILED: sync_error should be populated after failure" >&2
+    return 1
+  fi
+}
+
+test_sync_skips_permanently_failed() {
+  source_client
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-stuck"
+  # Set sync_attempts to 5 (max) to simulate permanently failed row
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "UPDATE transcripts SET sync_attempts = 5, sync_error = 'bad data' WHERE session_id = 'session-stuck';"
+
+  local output
+  output=$(supabase_sync_all_transcripts "$TEST_DIR/.pm/tasks.db" "dev" 2>&1)
+  assert_contains "$output" "permanently failed" "Should report permanently failed rows"
+
+  # Should NOT have been synced
+  local synced
+  synced=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT synced_at FROM transcripts WHERE session_id='session-stuck';")
+  assert_equals "" "$synced" "Permanently failed row should not be synced"
+}
+
+test_sync_batch_fallback_to_individual() {
+  # Mock: batch POST returns 400 (simulating one bad row in batch)
+  # Then individual POSTs return 200 (default mock behavior)
+  # We can't easily simulate "batch fails, individual succeeds" with the mock,
+  # but we can verify the fallback path is exercised by checking that
+  # individual sync attempts are made after batch failure
+  export MOCK_HTTP_CODE="400"
+  source_client
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-fb-1"
+  insert_test_transcript "$TEST_DIR/.pm/tasks.db" "session-fb-2"
+
+  local output
+  output=$(supabase_sync_all_transcripts "$TEST_DIR/.pm/tasks.db" "dev" 2>&1)
+  assert_contains "$output" "falling back" "Should report falling back to individual sync"
+
+  # Both rows should have sync_attempts incremented (batch failed, then individual failed too since mock returns 400)
+  local total_attempts
+  total_attempts=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT SUM(sync_attempts) FROM transcripts WHERE session_id IN ('session-fb-1','session-fb-2');")
+  if [[ "$total_attempts" -lt 2 ]]; then
+    echo "    ASSERT FAILED: sync_attempts should be incremented on both rows (got $total_attempts)" >&2
+    return 1
+  fi
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -583,6 +773,19 @@ echo ""
 echo -e "${BOLD}Connectivity${NC}"
 run_test "Ping returns success on 200"                  test_ping_success
 run_test "Ping returns failure on error"                test_ping_failure
+
+echo ""
+echo -e "${BOLD}Transcript Sync${NC}"
+run_test "Upserts transcript to Supabase"               test_upsert_transcript
+run_test "Sets synced_at after upsert"                  test_upsert_transcript_sets_synced_at
+run_test "Handles nonexistent transcript"               test_upsert_transcript_not_found
+run_test "Diff-based sync skips already-synced"         test_sync_all_transcripts_diff
+run_test "Reports nothing when all synced"              test_sync_all_transcripts_nothing_to_sync
+run_test "Supabase schema has transcript columns"       test_schema_has_transcripts_columns
+run_test "Supabase schema has developer summary view"   test_schema_has_developer_summary_view
+run_test "Records sync failure with attempt count"      test_upsert_transcript_records_failure
+run_test "Skips permanently failed rows (>=5 attempts)" test_sync_skips_permanently_failed
+run_test "Batch failure falls back to individual sync"  test_sync_batch_fallback_to_individual
 
 echo ""
 echo -e "${BOLD}Error Handling${NC}"

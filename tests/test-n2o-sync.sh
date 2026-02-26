@@ -421,13 +421,13 @@ test_hook_shows_version_notification() {
 
 test_hook_silent_on_repeat() {
   setup
-  # First run — shows notification
+  # First run — shows version notification
   echo '{"source":"startup","session_id":"test1","cwd":"'"$TEST_DIR"'"}' | bash "$TEST_DIR/scripts/n2o-session-hook.sh" &>/dev/null
-  # Second run — should be silent
+  # Second run — version notification should NOT appear (developer info line is OK)
   local output
   output=$(echo '{"source":"startup","session_id":"test2","cwd":"'"$TEST_DIR"'"}' | bash "$TEST_DIR/scripts/n2o-session-hook.sh" 2>/dev/null)
-  if [[ -n "$output" ]]; then
-    echo "    ASSERT FAILED: Hook should be silent on second run" >&2
+  if echo "$output" | grep -q "N2O framework updated"; then
+    echo "    ASSERT FAILED: Version notification should not repeat on second run" >&2
     return 1
   fi
   teardown
@@ -464,6 +464,163 @@ test_hook_no_duplicate_on_sync() {
 test_gitignore_has_last_seen() {
   setup
   assert_file_contains "$TEST_DIR/.gitignore" ".pm/.last_seen_version"
+  teardown
+}
+
+test_sync_equal_versions() {
+  setup
+  # Pin to current version (same as framework)
+  "$N2O" pin "$TEST_DIR"
+  # Sync should proceed (not blocked) since versions are equal
+  local output exit_code=0
+  output=$("$N2O" sync "$TEST_DIR" 2>&1) || exit_code=$?
+  # Should NOT contain the "pinned" warning
+  if [[ "$output" == *"pinned to v"* ]]; then
+    echo "    ASSERT FAILED: Equal version sync should not show pinned warning" >&2
+    teardown
+    return 1
+  fi
+  teardown
+}
+
+test_sync_dry_run_no_modifications() {
+  setup
+  # Set project to an older version so sync has something to do
+  local tmp
+  tmp=$(mktemp)
+  jq '.n2o_version = "0.1.0"' "$TEST_DIR/.pm/config.json" > "$tmp"
+  mv "$tmp" "$TEST_DIR/.pm/config.json"
+
+  # Capture config checksum before dry-run
+  local before_checksum
+  before_checksum=$(shasum "$TEST_DIR/.pm/config.json" | cut -d' ' -f1)
+
+  "$N2O" sync "$TEST_DIR" --dry-run &>/dev/null || true
+
+  # Config version should NOT have changed
+  local after_checksum
+  after_checksum=$(shasum "$TEST_DIR/.pm/config.json" | cut -d' ' -f1)
+  if [[ "$before_checksum" != "$after_checksum" ]]; then
+    echo "    ASSERT FAILED: --dry-run should not modify config.json" >&2
+    teardown
+    return 1
+  fi
+
+  # n2o_version should still be 0.1.0
+  assert_json_field "$TEST_DIR/.pm/config.json" ".n2o_version" "0.1.0"
+  teardown
+}
+
+test_sync_older_framework_than_pinned() {
+  setup
+  # Pin to a version higher than the framework (e.g., 99.0.0)
+  "$N2O" pin "$TEST_DIR" "99.0.0"
+  # Framework is 1.0.0 which is OLDER than pin — sync should proceed (not blocked)
+  local output
+  output=$("$N2O" sync "$TEST_DIR" 2>&1) || true
+  # Should NOT show the pinned warning (only fires when framework > pinned)
+  if [[ "$output" == *"pinned to v99.0.0"* && "$output" == *"Use 'n2o sync --force'"* ]]; then
+    echo "    ASSERT FAILED: Sync with older framework should not be blocked by pin" >&2
+    teardown
+    return 1
+  fi
+  teardown
+}
+
+test_sync_creates_backup() {
+  setup
+  # Modify a framework-managed file so it differs from the framework source.
+  # .pm/schema.sql is a framework file that gets synced.
+  echo "-- modified by test" >> "$TEST_DIR/.pm/schema.sql"
+
+  # Sync should create a backup of the changed file
+  "$N2O" sync "$TEST_DIR" &>/dev/null || true
+
+  # Check that .n2o-backup directory was created with at least one file
+  local backup_count
+  backup_count=$(find "$TEST_DIR/.n2o-backup" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$backup_count" -eq 0 ]]; then
+    echo "    ASSERT FAILED: sync should create .n2o-backup with backed-up files (found $backup_count)" >&2
+    teardown
+    return 1
+  fi
+  teardown
+}
+
+test_sync_adds_new_files() {
+  setup
+  # Remove a synced file from the project
+  rm -f "$TEST_DIR/.pm/schema.sql"
+
+  # Sync should restore it
+  "$N2O" sync "$TEST_DIR" &>/dev/null || true
+
+  if [[ ! -f "$TEST_DIR/.pm/schema.sql" ]]; then
+    echo "    ASSERT FAILED: sync should restore missing framework files" >&2
+    teardown
+    return 1
+  fi
+  teardown
+}
+
+test_sync_all_no_projects_file() {
+  # sync --all should fail if no projects are registered
+  # Temporarily ensure .n2o-projects.json doesn't exist
+  local projects_file="$N2O_DIR/.n2o-projects.json"
+  local had_file=false
+  local backup=""
+  if [[ -f "$projects_file" ]]; then
+    had_file=true
+    backup=$(mktemp)
+    cp "$projects_file" "$backup"
+    rm "$projects_file"
+  fi
+
+  local rc=0
+  "$N2O" sync --all 2>/dev/null || rc=$?
+
+  # Restore if needed
+  if $had_file; then
+    mv "$backup" "$projects_file"
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "    ASSERT FAILED: sync --all without projects file should exit non-zero (got $rc)" >&2
+    return 1
+  fi
+}
+
+test_sync_changelog_missing_graceful() {
+  setup
+  # Set project to older version so show_changelog gets called
+  local tmp
+  tmp=$(mktemp)
+  jq '.n2o_version = "0.1.0"' "$TEST_DIR/.pm/config.json" > "$tmp"
+  mv "$tmp" "$TEST_DIR/.pm/config.json"
+
+  # Temporarily rename CHANGELOG.md if it exists
+  local changelog_backup=""
+  if [[ -f "$N2O_DIR/CHANGELOG.md" ]]; then
+    changelog_backup=$(mktemp)
+    cp "$N2O_DIR/CHANGELOG.md" "$changelog_backup"
+    mv "$N2O_DIR/CHANGELOG.md" "$N2O_DIR/CHANGELOG.md.bak"
+  fi
+
+  # Sync should not crash even without CHANGELOG.md
+  local exit_code=0
+  "$N2O" sync "$TEST_DIR" &>/dev/null || exit_code=$?
+
+  # Restore CHANGELOG.md
+  if [[ -n "$changelog_backup" ]]; then
+    mv "$N2O_DIR/CHANGELOG.md.bak" "$N2O_DIR/CHANGELOG.md"
+    rm -f "$changelog_backup"
+  fi
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    echo "    ASSERT FAILED: Sync should not crash with missing CHANGELOG.md (exit code $exit_code)" >&2
+    teardown
+    return 1
+  fi
   teardown
 }
 
@@ -515,6 +672,19 @@ run_test "Hook silent on repeat"                  test_hook_silent_on_repeat
 run_test "Hook merge preserves existing settings" test_hook_merge_preserves_settings
 run_test "Hook not duplicated on sync"            test_hook_no_duplicate_on_sync
 run_test "Gitignore has .last_seen_version"       test_gitignore_has_last_seen
+
+echo ""
+echo -e "${BOLD}Edge Cases${NC}"
+run_test "Sync with equal pinned version"         test_sync_equal_versions
+run_test "Dry-run makes no modifications"         test_sync_dry_run_no_modifications
+run_test "Older framework not blocked by pin"     test_sync_older_framework_than_pinned
+run_test "Missing CHANGELOG.md handled gracefully" test_sync_changelog_missing_graceful
+
+echo ""
+echo -e "${BOLD}Backup & Sync Directory${NC}"
+run_test "Sync creates backup of changed files"      test_sync_creates_backup
+run_test "Sync adds new framework files"             test_sync_adds_new_files
+run_test "sync --all without projects file exits 1"  test_sync_all_no_projects_file
 
 # Summary
 echo ""

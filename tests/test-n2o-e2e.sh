@@ -481,6 +481,291 @@ test_e2e_session_end_hook_registered() {
   assert_output_contains "$cmd" "collect-transcripts.sh" "SessionEnd hook should call collect-transcripts.sh"
 }
 
+test_e2e_all_skills_deployed() {
+  # After n2o init, all 6 skills should be in .claude/skills/ with valid SKILL.md
+  local expected_skills=("pm-agent" "tdd-agent" "bug-workflow" "detect-project" "react-best-practices" "web-design-guidelines")
+
+  for skill in "${expected_skills[@]}"; do
+    assert_file_exists "$TEST_DIR/.claude/skills/$skill/SKILL.md" \
+      "Skill $skill should have SKILL.md after init"
+  done
+
+  # Count should be exactly 6 (no extras, no missing)
+  local skill_count
+  skill_count=$(find "$TEST_DIR/.claude/skills" -name "SKILL.md" -type f | wc -l | tr -d ' ')
+  assert_equals "6" "$skill_count" "Should have exactly 6 SKILL.md files after init"
+}
+
+test_e2e_skills_have_frontmatter() {
+  # Every deployed skill must have YAML frontmatter with name and description
+  local expected_skills=("pm-agent" "tdd-agent" "bug-workflow" "detect-project" "react-best-practices" "web-design-guidelines")
+
+  for skill in "${expected_skills[@]}"; do
+    local skill_file="$TEST_DIR/.claude/skills/$skill/SKILL.md"
+
+    # Must start with ---
+    local first_line
+    first_line=$(head -1 "$skill_file")
+    assert_equals "---" "$first_line" "$skill SKILL.md must start with YAML frontmatter delimiter"
+
+    # Must have name field matching directory name
+    assert_file_contains "$skill_file" "name: $skill" \
+      "$skill SKILL.md must have name: $skill in frontmatter"
+
+    # Must have description field with trigger phrases
+    if ! grep -q '^description:' "$skill_file" 2>/dev/null; then
+      echo "    ASSERT FAILED: $skill SKILL.md must have description field in frontmatter" >&2
+      return 1
+    fi
+  done
+}
+
+test_e2e_auto_invoke_config() {
+  # Config must have auto_invoke_skills: true and disabled_skills: []
+  assert_json_field "$TEST_DIR/.pm/config.json" ".auto_invoke_skills" "true" \
+    "config.json must have auto_invoke_skills=true"
+
+  local disabled
+  disabled=$(jq -r '.disabled_skills | length' "$TEST_DIR/.pm/config.json" 2>/dev/null)
+  assert_equals "0" "$disabled" "disabled_skills should be empty array"
+}
+
+test_e2e_claude_md_auto_invocation() {
+  # CLAUDE.md must contain auto-invocation instructions for Claude
+  assert_file_contains "$TEST_DIR/CLAUDE.md" "auto_invoke_skills" \
+    "CLAUDE.md must reference auto_invoke_skills config"
+
+  assert_file_contains "$TEST_DIR/CLAUDE.md" "INVOKE skills automatically" \
+    "CLAUDE.md must instruct Claude to invoke skills automatically"
+
+  assert_file_contains "$TEST_DIR/CLAUDE.md" "Pattern skills" \
+    "CLAUDE.md must describe pattern skills as ambient"
+
+  # Must list all agent skills
+  assert_file_contains "$TEST_DIR/CLAUDE.md" "/pm-agent" "CLAUDE.md must list pm-agent"
+  assert_file_contains "$TEST_DIR/CLAUDE.md" "/tdd-agent" "CLAUDE.md must list tdd-agent"
+  assert_file_contains "$TEST_DIR/CLAUDE.md" "/bug-workflow" "CLAUDE.md must list bug-workflow"
+}
+
+test_e2e_session_hooks_registered() {
+  local settings="$TEST_DIR/.claude/settings.json"
+
+  # SessionStart hook must reference n2o-session-hook.sh
+  local start_cmd
+  start_cmd=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$settings" 2>/dev/null)
+  assert_output_contains "$start_cmd" "n2o-session-hook.sh" \
+    "SessionStart hook must call n2o-session-hook.sh"
+
+  # SessionEnd hook must reference collect-transcripts.sh
+  local end_cmd
+  end_cmd=$(jq -r '.hooks.SessionEnd[0].hooks[0].command' "$settings" 2>/dev/null)
+  assert_output_contains "$end_cmd" "collect-transcripts.sh" \
+    "SessionEnd hook must call collect-transcripts.sh"
+
+  # Both hook scripts must actually exist and be executable
+  assert_file_exists "$TEST_DIR/scripts/n2o-session-hook.sh" "Session hook script must exist"
+  assert_file_exists "$TEST_DIR/scripts/collect-transcripts.sh" "Collect script must exist"
+
+  if [[ ! -x "$TEST_DIR/scripts/n2o-session-hook.sh" ]]; then
+    echo "    ASSERT FAILED: n2o-session-hook.sh must be executable" >&2
+    return 1
+  fi
+}
+
+test_e2e_skill_checksums_seeded() {
+  # After init, .pm/.skill-checksums.json should exist with entries for all skills
+  assert_file_exists "$TEST_DIR/.pm/.skill-checksums.json" \
+    "Skill checksums file must exist after init"
+
+  local checksum_count
+  checksum_count=$(jq 'length' "$TEST_DIR/.pm/.skill-checksums.json" 2>/dev/null)
+  assert_equals "6" "$checksum_count" "Should have 6 checksum entries (one per SKILL.md)"
+
+  # Each entry should be a 64-char hex SHA256
+  local first_checksum
+  first_checksum=$(jq -r 'to_entries[0].value' "$TEST_DIR/.pm/.skill-checksums.json" 2>/dev/null)
+  local checksum_len=${#first_checksum}
+  assert_equals "64" "$checksum_len" "Checksums should be 64-char SHA256 hex strings"
+
+  # Checksums file must be in .gitignore
+  assert_file_contains "$TEST_DIR/.gitignore" ".pm/.skill-checksums.json" \
+    "Checksums file must be gitignored"
+}
+
+test_e2e_transcript_linkage() {
+  local db="$TEST_DIR/.pm/tasks.db"
+  local session_id="linkage-session-001"
+
+  # Create a task claimed by this session
+  sqlite3 "$db" "INSERT INTO tasks (sprint, task_num, title, status, session_id) VALUES ('link-sprint', 1, 'Linked task', 'red', '$session_id');"
+
+  # Create a transcript for that session
+  create_e2e_transcript "$CLAUDE_TEST_DIR" "$session_id"
+  (cd "$TEST_DIR" && bash "$COLLECT" --quiet) > /dev/null 2>&1
+
+  # Verify transcript has sprint/task_num populated
+  local sprint
+  sprint=$(sqlite3 "$db" "SELECT sprint FROM transcripts WHERE session_id = '$session_id';")
+  assert_equals "link-sprint" "$sprint" "Transcript sprint should be linked"
+
+  local task_num
+  task_num=$(sqlite3 "$db" "SELECT task_num FROM transcripts WHERE session_id = '$session_id';")
+  assert_equals "1" "$task_num" "Transcript task_num should be linked"
+
+  # Verify workflow events also have sprint/task_num
+  local event_sprint
+  event_sprint=$(sqlite3 "$db" "SELECT sprint FROM workflow_events WHERE session_id = '$session_id' LIMIT 1;")
+  assert_equals "link-sprint" "$event_sprint" "Workflow events should have sprint linkage"
+
+  local event_task
+  event_task=$(sqlite3 "$db" "SELECT task_num FROM workflow_events WHERE session_id = '$session_id' LIMIT 1;")
+  assert_equals "1" "$event_task" "Workflow events should have task_num linkage"
+}
+
+test_e2e_task_trajectory_view() {
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Insert phase_entered workflow events simulating a TDD cycle
+  sqlite3 "$db" "
+    INSERT INTO tasks (sprint, task_num, title, status) VALUES ('traj-sprint', 1, 'Trajectory test', 'green');
+    INSERT INTO workflow_events (sprint, task_num, event_type, phase, timestamp) VALUES ('traj-sprint', 1, 'phase_entered', 'RED', '2025-02-20T10:00:00Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, phase, timestamp) VALUES ('traj-sprint', 1, 'phase_entered', 'GREEN', '2025-02-20T10:10:00Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, phase, timestamp) VALUES ('traj-sprint', 1, 'phase_entered', 'REFACTOR', '2025-02-20T10:15:00Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, phase, timestamp) VALUES ('traj-sprint', 1, 'phase_entered', 'AUDIT', '2025-02-20T10:20:00Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, phase, timestamp) VALUES ('traj-sprint', 1, 'phase_entered', 'FIX_AUDIT', '2025-02-20T10:25:00Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, phase, timestamp) VALUES ('traj-sprint', 1, 'phase_entered', 'COMMIT', '2025-02-20T10:30:00Z');
+  "
+
+  # Verify task_trajectory view
+  local total_phases
+  total_phases=$(sqlite3 "$db" "SELECT total_phases FROM task_trajectory WHERE sprint='traj-sprint' AND task_num=1;")
+  assert_equals "6" "$total_phases" "task_trajectory should show 6 total phases"
+
+  local audit_reversions
+  audit_reversions=$(sqlite3 "$db" "SELECT audit_reversions FROM task_trajectory WHERE sprint='traj-sprint' AND task_num=1;")
+  assert_equals "1" "$audit_reversions" "task_trajectory should count 1 FIX_AUDIT reversion"
+
+  local first_red
+  first_red=$(sqlite3 "$db" "SELECT first_red FROM task_trajectory WHERE sprint='traj-sprint' AND task_num=1;")
+  assert_equals "2025-02-20T10:00:00Z" "$first_red" "task_trajectory first_red should match"
+
+  local completed_at
+  completed_at=$(sqlite3 "$db" "SELECT completed_at FROM task_trajectory WHERE sprint='traj-sprint' AND task_num=1;")
+  assert_equals "2025-02-20T10:30:00Z" "$completed_at" "task_trajectory completed_at should be COMMIT timestamp"
+
+  local trajectory
+  trajectory=$(sqlite3 "$db" "SELECT trajectory FROM task_trajectory WHERE sprint='traj-sprint' AND task_num=1;")
+  assert_output_contains "$trajectory" "RED" "Trajectory should contain RED"
+  assert_output_contains "$trajectory" "COMMIT" "Trajectory should contain COMMIT"
+}
+
+test_e2e_cache_tokens_in_transcript() {
+  setup_with_transcript
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # The e2e fixture doesn't have cache tokens, so verify the column exists and defaults
+  local cache_read
+  cache_read=$(sqlite3 "$db" "SELECT cache_read_tokens FROM transcripts LIMIT 1;")
+  assert_equals "0" "$cache_read" "cache_read_tokens should default to 0 for fixture without cache"
+
+  local cache_creation
+  cache_creation=$(sqlite3 "$db" "SELECT cache_creation_tokens FROM transcripts LIMIT 1;")
+  assert_equals "0" "$cache_creation" "cache_creation_tokens should default to 0 for fixture without cache"
+
+  local user_content_len
+  user_content_len=$(sqlite3 "$db" "SELECT total_user_content_length FROM transcripts LIMIT 1;")
+  # "Implement the CSV parser" (24) + "Looks good, continue" (20) = 44
+  assert_equals "44" "$user_content_len" "total_user_content_length should be 24+20=44"
+}
+
+test_e2e_session_health_view() {
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Insert a transcript with comprehensive JSONL data
+  sqlite3 "$db" "INSERT INTO transcripts (
+    session_id, file_path, file_size_bytes, message_count, user_message_count,
+    assistant_message_count, tool_call_count, total_input_tokens, total_output_tokens,
+    model, system_error_count, system_retry_count, compaction_count,
+    tool_result_error_count, thinking_message_count, thinking_total_length,
+    has_sidechain, avg_turn_duration_ms, service_tier,
+    stop_reason_counts
+  ) VALUES (
+    'health-session-001', '/tmp/test.jsonl', 1000, 10, 3, 5, 8, 500, 200,
+    'claude-sonnet-4-20250514', 2, 1, 1, 3, 2, 500, 0, 4000, 'standard',
+    '{\"end_turn\": 3, \"tool_use\": 2}'
+  );"
+
+  # Verify session_health view
+  local health_status
+  health_status=$(sqlite3 "$db" "SELECT health_status FROM session_health WHERE session_id = 'health-session-001';")
+  assert_equals "context_pressure" "$health_status" "Session with compactions should be context_pressure"
+
+  local total_errors
+  total_errors=$(sqlite3 "$db" "SELECT total_errors FROM session_health WHERE session_id = 'health-session-001';")
+  assert_equals "6" "$total_errors" "total_errors = 2 errors + 1 retry + 3 tool_result_errors = 6"
+
+  local thinking
+  thinking=$(sqlite3 "$db" "SELECT thinking_message_count FROM session_health WHERE session_id = 'health-session-001';")
+  assert_equals "2" "$thinking" "session_health should expose thinking_message_count"
+}
+
+test_e2e_brain_cycles_view() {
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Insert a task and transcript with linkage
+  sqlite3 "$db" "
+    INSERT INTO tasks (sprint, task_num, title, status, complexity) VALUES ('bc-sprint', 1, 'Brain cycles test', 'green', 'medium');
+    INSERT INTO transcripts (
+      session_id, file_path, file_size_bytes, message_count, user_message_count,
+      assistant_message_count, tool_call_count, total_input_tokens, total_output_tokens,
+      sprint, task_num, total_user_content_length, compaction_count,
+      stop_reason_counts
+    ) VALUES (
+      'brain-session-001', '/tmp/test.jsonl', 1000, 8, 4, 4, 5, 400, 200,
+      'bc-sprint', 1, 120, 0, '{\"end_turn\": 2, \"tool_use\": 2}'
+    );
+  "
+
+  local brain_cycles
+  brain_cycles=$(sqlite3 "$db" "SELECT brain_cycles FROM brain_cycles_per_task WHERE sprint = 'bc-sprint' AND task_num = 1;")
+  assert_equals "4" "$brain_cycles" "brain_cycles should equal user_message_count (4)"
+
+  local avg_chars
+  avg_chars=$(sqlite3 "$db" "SELECT avg_chars_per_prompt FROM brain_cycles_per_task WHERE sprint = 'bc-sprint' AND task_num = 1;")
+  assert_equals "30.0" "$avg_chars" "avg_chars_per_prompt should be 120/4 = 30.0"
+}
+
+test_e2e_context_loading_view() {
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Insert a task and tool call events (reads before first write)
+  sqlite3 "$db" "
+    INSERT INTO tasks (sprint, task_num, title, status) VALUES ('ctx-sprint', 1, 'Context loading test', 'green');
+    INSERT INTO workflow_events (sprint, task_num, event_type, tool_name, timestamp) VALUES ('ctx-sprint', 1, 'tool_call', 'Read', '2025-02-20T10:00:00Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, tool_name, timestamp) VALUES ('ctx-sprint', 1, 'tool_call', 'Glob', '2025-02-20T10:00:01Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, tool_name, timestamp) VALUES ('ctx-sprint', 1, 'tool_call', 'Grep', '2025-02-20T10:00:02Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, tool_name, timestamp) VALUES ('ctx-sprint', 1, 'tool_call', 'Edit', '2025-02-20T10:00:03Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, tool_name, timestamp) VALUES ('ctx-sprint', 1, 'tool_call', 'Read', '2025-02-20T10:00:04Z');
+    INSERT INTO workflow_events (sprint, task_num, event_type, tool_name, timestamp) VALUES ('ctx-sprint', 1, 'tool_call', 'Write', '2025-02-20T10:00:05Z');
+  "
+
+  local reads_before
+  reads_before=$(sqlite3 "$db" "SELECT reads_before_first_write FROM context_loading_time WHERE sprint = 'ctx-sprint' AND task_num = 1;")
+  assert_equals "3" "$reads_before" "Should have 3 reads before first write"
+
+  local total_reads
+  total_reads=$(sqlite3 "$db" "SELECT total_reads FROM context_loading_time WHERE sprint = 'ctx-sprint' AND task_num = 1;")
+  assert_equals "4" "$total_reads" "Should have 4 total reads (3 before + 1 after)"
+
+  local total_writes
+  total_writes=$(sqlite3 "$db" "SELECT total_writes FROM context_loading_time WHERE sprint = 'ctx-sprint' AND task_num = 1;")
+  assert_equals "2" "$total_writes" "Should have 2 total writes (Edit + Write)"
+
+  local ratio
+  ratio=$(sqlite3 "$db" "SELECT context_load_ratio FROM context_loading_time WHERE sprint = 'ctx-sprint' AND task_num = 1;")
+  assert_equals "1.5" "$ratio" "context_load_ratio should be 3/2 = 1.5"
+}
+
 test_e2e_concurrent_sessions_persisted() {
   # Pipe a startup event to the session hook and verify developer_context gets a row
   local db="$TEST_DIR/.pm/tasks.db"
@@ -547,6 +832,24 @@ echo ""
 echo -e "${BOLD}Sync${NC}"
 run_test "Sync restores corrupted schema"                test_e2e_sync_restores_schema
 run_test "Sync preserves config customizations"          test_e2e_sync_preserves_config
+
+echo ""
+echo -e "${BOLD}Skill Auto-Invocation Pipeline${NC}"
+run_test "All 6 skills deployed to .claude/skills/"      test_e2e_all_skills_deployed
+run_test "Every skill has valid YAML frontmatter"        test_e2e_skills_have_frontmatter
+run_test "Config enables auto-invocation"                test_e2e_auto_invoke_config
+run_test "CLAUDE.md has auto-invocation instructions"    test_e2e_claude_md_auto_invocation
+run_test "Both session hooks registered + executable"    test_e2e_session_hooks_registered
+run_test "Skill checksums seeded for protection"         test_e2e_skill_checksums_seeded
+
+echo ""
+echo -e "${BOLD}Data Completeness${NC}"
+run_test "Transcript-to-task linkage"                    test_e2e_transcript_linkage
+run_test "Task trajectory view"                          test_e2e_task_trajectory_view
+run_test "Cache tokens and user content length"          test_e2e_cache_tokens_in_transcript
+run_test "Session health view"                           test_e2e_session_health_view
+run_test "Brain cycles per task view"                    test_e2e_brain_cycles_view
+run_test "Context loading time view"                     test_e2e_context_loading_view
 
 echo ""
 echo -e "${BOLD}Session Hook${NC}"

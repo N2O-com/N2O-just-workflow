@@ -1,5 +1,6 @@
 ---
 name: bug-workflow
+version: "1.0.0"
 description: "Use when the user reports a bug or needs help investigating unexpected behavior. Triggers: found a bug, bug report, something's broken, this doesn't work, investigate this bug, be my debugging partner, help me debug, manual verification failed, why is this failing, unexpected behavior, regression. Investigates root cause and generates tasks — does NOT write fixes (use tdd-agent for that)."
 ---
 

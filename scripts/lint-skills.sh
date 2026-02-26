@@ -38,12 +38,13 @@ FAILED_SKILLS=0
 # Stored as parallel arrays for bash 3.2 compatibility (no associative arrays).
 # =============================================================================
 
-SKILL_NAMES=(    "tdd-agent"                           "pm-agent"                                                                                        "bug-workflow")
-SKILL_FILES=(    "02-agents/tdd-agent/SKILL.md"        "02-agents/pm-agent/SKILL.md"                                                                     "02-agents/bug-workflow/SKILL.md")
+SKILL_NAMES=(    "tdd-agent"                           "pm-agent"                                                                                        "bug-workflow"                      "detect-project")
+SKILL_FILES=(    "02-agents/tdd-agent/SKILL.md"        "02-agents/pm-agent/SKILL.md"                                                                     "02-agents/bug-workflow/SKILL.md"   "02-agents/detect-project/SKILL.md")
 SKILL_PHASES=(   "RED GREEN REFACTOR AUDIT FIX_AUDIT CODIFY COMMIT REPORT" \
                  "IDEATION AUDIT_CODE REFINEMENT PRE_TASK_CHECKLIST SPRINT_PLANNING POST_LOAD_AUDIT START_IMPLEMENTATION" \
-                 "REPRODUCE INVESTIGATE SCOPE HYPOTHESIS TASK")
-SKILL_EVENTS=(   "task_completed"                      ""                                                                                                "")
+                 "REPRODUCE INVESTIGATE SCOPE HYPOTHESIS TASK" \
+                 "")
+SKILL_EVENTS=(   "task_completed"                      ""                                                                                                ""                                  "")
 
 # =============================================================================
 # Helpers
@@ -107,6 +108,22 @@ lint_skill() {
     FAILED_SKILLS=$((FAILED_SKILLS + 1))
     TOTAL_SKILLS=$((TOTAL_SKILLS + 1))
     return 1
+  fi
+
+  # Check version field in YAML frontmatter
+  if grep -q '^version:' "$full_path" 2>/dev/null; then
+    local version_val
+    version_val=$(sed -n '/^---$/,/^---$/{ /^version:/{ s/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p; }; }' "$full_path")
+    if echo "$version_val" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      print_result "pass" "version: $version_val (valid semver)"
+      present=$((present + 1))
+    else
+      print_result "fail" "version: '$version_val' (invalid semver — expected X.Y.Z)"
+      missing=$((missing + 1))
+    fi
+  else
+    print_result "fail" "version: missing from YAML frontmatter"
+    missing=$((missing + 1))
   fi
 
   # Check each required phase marker

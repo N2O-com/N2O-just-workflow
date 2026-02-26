@@ -32,11 +32,21 @@ log_header()  { echo -e "\n${BOLD}$1${NC}"; }
 # Argument parsing
 # ---------------------------------------------------------------------------
 REPARSE=false
+QUIET=false
 for arg in "$@"; do
   case "$arg" in
     --reparse) REPARSE=true ;;
+    --quiet) QUIET=true ;;
   esac
 done
+
+# In quiet mode, suppress non-error output
+if $QUIET; then
+  log_info()    { :; }
+  log_success() { :; }
+  log_warn()    { :; }
+  log_header()  { :; }
+fi
 
 # ---------------------------------------------------------------------------
 # Dependency check
@@ -47,6 +57,37 @@ for cmd in jq sqlite3; do
     exit 1
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Skill version lookup
+# ---------------------------------------------------------------------------
+
+# Get the version of a skill from its SKILL.md frontmatter.
+# Usage: get_skill_version <skill_name>
+# Searches 02-agents/*/SKILL.md, 03-patterns/*/SKILL.md, .claude/skills/*/SKILL.md
+get_skill_version() {
+  local skill_name="$1"
+  local skill_file=""
+
+  # Search in known skill directories
+  for dir in "02-agents" "03-patterns" ".claude/skills"; do
+    local candidate="$PROJECT_ROOT/$dir/$skill_name/SKILL.md"
+    if [[ -f "$candidate" ]]; then
+      skill_file="$candidate"
+      break
+    fi
+  done
+
+  if [[ -z "$skill_file" ]]; then
+    echo ""
+    return
+  fi
+
+  # Extract version from YAML frontmatter using sed
+  local version
+  version=$(sed -n '/^---$/,/^---$/{ /^version:/{ s/^version:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p; }; }' "$skill_file")
+  echo "$version"
+}
 
 # ---------------------------------------------------------------------------
 # Resolve paths
@@ -125,11 +166,20 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   fi
 
   # Check if already indexed by file_path (skip this check during --reparse)
+  # If already indexed but the file has grown, re-collect (UPDATE instead of INSERT)
+  UPDATE_MODE=false
   if [[ "$REPARSE" != "true" ]]; then
-    existing=$(sqlite3 "$DB" "SELECT COUNT(*) FROM transcripts WHERE file_path = '$(echo "$jsonl_file" | sed "s/'/''/g")';")
-    if [[ "$existing" -gt 0 ]]; then
-      ((SKIP_COUNT++)) || true
-      continue
+    sql_escaped_path="$(echo "$jsonl_file" | sed "s/'/''/g")"
+    existing_info=$(sqlite3 "$DB" "SELECT file_size_bytes FROM transcripts WHERE file_path = '$sql_escaped_path';" 2>/dev/null)
+    if [[ -n "$existing_info" ]]; then
+      current_size=$(stat -f%z "$jsonl_file" 2>/dev/null || stat --printf="%s" "$jsonl_file" 2>/dev/null || echo "0")
+      if [[ "$current_size" -le "$existing_info" ]]; then
+        # File hasn't grown — skip
+        ((SKIP_COUNT++)) || true
+        continue
+      fi
+      # File grew since last collection (still-running session) — re-collect and UPDATE
+      UPDATE_MODE=true
     fi
   fi
 
@@ -151,8 +201,22 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   # -------------------------------------------------------------------------
   # We extract all needed data in one jq invocation for performance.
   # Output format: JSON object with all fields we need.
+  #
+  # Resilience: if the last line is truncated (crash/shutdown), jq -s
+  # fails on the whole file. Pre-validate by checking if jq can slurp it;
+  # if not, strip the last line into a temp file and use that instead.
+  jq_input="$jsonl_file"
+  if ! jq -e '.' "$jsonl_file" >/dev/null 2>&1; then
+    trimmed=$(mktemp)
+    sed '$d' "$jsonl_file" > "$trimmed" 2>/dev/null
+    if jq -e '.' "$trimmed" >/dev/null 2>&1; then
+      jq_input="$trimmed"
+      log_warn "Truncated last line in $basename_file (recovered $(wc -l < "$trimmed" | tr -d ' ') of $(wc -l < "$jsonl_file" | tr -d ' ') lines)"
+    fi
+    # trimmed gets cleaned up after the jq pass below
+  fi
   metadata=$(jq -r -s '
-    # Filter to only user/assistant/system messages (skip progress, file-history-snapshot, etc.)
+    # Filter to user/assistant/system messages for core counts
     [.[] | select(.type == "user" or .type == "assistant" or .type == "system")] as $msgs |
 
     # Session ID from first message with a sessionId
@@ -171,12 +235,76 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
     ([.[] | select(.type == "assistant") | .message.usage.input_tokens // 0] | add // 0) as $input_tokens |
     ([.[] | select(.type == "assistant") | .message.usage.output_tokens // 0] | add // 0) as $output_tokens |
 
+    # Cache token totals from assistant messages
+    ([.[] | select(.type == "assistant") | .message.usage.cache_read_input_tokens // 0] | add // 0) as $cache_read |
+    ([.[] | select(.type == "assistant") | .message.usage.cache_creation_input_tokens // 0] | add // 0) as $cache_creation |
+
+    # User message timestamps (for inter-message gap analysis)
+    ([.[] | select(.type == "user") | .timestamp] | map(select(. != null))) as $user_ts |
+
+    # User content length (proxy for prompt verbosity)
+    ([.[] | select(.type == "user") | .message.content | if type == "array" then [.[] | select(.type == "text") | .text | length] | add // 0 elif type == "string" then length else 0 end] | add // 0) as $user_content_len |
+
     # Model from first assistant message that has one
     ([.[] | select(.type == "assistant" and .message.model != null)] | first // null) as $model_msg |
 
-    # Timestamps
+    # Timestamps (across ALL message types including progress)
     ([.[] | select(.timestamp != null) | .timestamp] | first // null) as $start_ts |
     ([.[] | select(.timestamp != null) | .timestamp] | last // null) as $end_ts |
+
+    # --- Comprehensive JSONL extraction (migration 006) ---
+
+    # Stop reason distribution from assistant messages
+    ([.[] | select(.type == "assistant") | .message.stop_reason // empty] |
+      group_by(.) | map({key: .[0], value: length}) | from_entries) as $stop_reasons |
+
+    # Thinking blocks: count messages with thinking content and total length
+    ([.[] | select(.type == "assistant") |
+      [.message.content[]? | select(.type == "thinking") | .text | length] |
+      select(length > 0) | add] | map(select(. != null))) as $thinking_lengths |
+    ($thinking_lengths | length) as $thinking_msg_count |
+    ($thinking_lengths | add // 0) as $thinking_total_len |
+
+    # Service tier from first assistant message that has it
+    ([.[] | select(.type == "assistant" and .message.usage.service_tier != null)] |
+      first // null) as $service_tier_msg |
+
+    # Sidechain: any user message with isSidechain=true
+    ([.[] | select(.type == "user" and .isSidechain == true)] | length > 0) as $has_sidechain |
+
+    # System message subtypes
+    ([.[] | select(.type == "system" and .subtype == "error")] | length) as $sys_errors |
+    ([.[] | select(.type == "system" and .subtype == "retry")] | length) as $sys_retries |
+    ([.[] | select(.type == "system" and .subtype == "compaction")] | length) as $compactions |
+
+    # Turn durations from system turn_duration messages
+    ([.[] | select(.type == "system" and .subtype == "turn_duration") | .durationMs // 0] |
+      if length > 0 then (add / length | floor) else null end) as $avg_turn_ms |
+
+    # Tool result errors from user messages with toolUseResult
+    ([.[] | select(.type == "user") | .toolUseResult // empty |
+      if type == "array" then .[] else . end |
+      select(.isError == true)] | length) as $tool_result_errors |
+
+    # --- Session context fields (migration 007) ---
+
+    # Working directory from first message that has cwd
+    ([.[] | select(.cwd != null) | .cwd] | first // null) as $cwd |
+
+    # Git branch from first message that has gitBranch
+    ([.[] | select(.gitBranch != null) | .gitBranch] | first // null) as $git_branch |
+
+    # Assistant message timestamps (for idle time / decision time analysis)
+    ([.[] | select(.type == "assistant") | .timestamp] | map(select(. != null))) as $assistant_ts |
+
+    # Background task count (queue-operation messages = async work)
+    ([.[] | select(.type == "queue-operation")] | length) as $bg_tasks |
+
+    # Web search/fetch count from assistant server_tool_use
+    ([.[] | select(.type == "assistant") |
+      (.message.usage.server_tool_use.web_search_requests // 0) +
+      (.message.usage.server_tool_use.web_fetch_requests // 0)
+    ] | add // 0) as $web_searches |
 
     {
       session_id: $first_with_sid.sessionId,
@@ -186,9 +314,28 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       tool_call_count: $tool_call_count,
       total_input_tokens: $input_tokens,
       total_output_tokens: $output_tokens,
+      cache_read_tokens: $cache_read,
+      cache_creation_tokens: $cache_creation,
+      user_message_timestamps: $user_ts,
+      total_user_content_length: $user_content_len,
       model: (if $model_msg then $model_msg.message.model else null end),
       started_at: $start_ts,
       ended_at: $end_ts,
+      stop_reason_counts: $stop_reasons,
+      thinking_message_count: $thinking_msg_count,
+      thinking_total_length: $thinking_total_len,
+      service_tier: (if $service_tier_msg then $service_tier_msg.message.usage.service_tier else null end),
+      has_sidechain: $has_sidechain,
+      system_error_count: $sys_errors,
+      system_retry_count: $sys_retries,
+      avg_turn_duration_ms: $avg_turn_ms,
+      tool_result_error_count: $tool_result_errors,
+      compaction_count: $compactions,
+      cwd: $cwd,
+      git_branch: $git_branch,
+      assistant_message_timestamps: $assistant_ts,
+      background_task_count: $bg_tasks,
+      web_search_count: $web_searches,
       tool_calls: [.[] | select(.type == "assistant") |
         .timestamp as $ts |
         .message.usage as $usage |
@@ -215,7 +362,10 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
         }
       ]
     }
-  ' "$jsonl_file" 2>/dev/null)
+  ' "$jq_input" 2>/dev/null)
+
+  # Clean up temp file if we created one
+  [[ "$jq_input" != "$jsonl_file" ]] && rm -f "$jq_input"
 
   if [[ -z "$metadata" || "$metadata" == "null" ]]; then
     log_warn "Could not parse: $basename_file (skipping)"
@@ -230,10 +380,66 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   tool_call_count=$(echo "$metadata" | jq -r '.tool_call_count // 0')
   total_input_tokens=$(echo "$metadata" | jq -r '.total_input_tokens // 0')
   total_output_tokens=$(echo "$metadata" | jq -r '.total_output_tokens // 0')
+  cache_read_tokens=$(echo "$metadata" | jq -r '.cache_read_tokens // 0')
+  cache_creation_tokens=$(echo "$metadata" | jq -r '.cache_creation_tokens // 0')
+  user_message_timestamps=$(echo "$metadata" | jq -c '.user_message_timestamps // []')
+  total_user_content_length=$(echo "$metadata" | jq -r '.total_user_content_length // 0')
   model=$(echo "$metadata" | jq -r '.model // empty')
   started_at=$(echo "$metadata" | jq -r '.started_at // empty')
   ended_at=$(echo "$metadata" | jq -r '.ended_at // empty')
+  # Comprehensive JSONL extraction (migration 006)
+  stop_reason_counts=$(echo "$metadata" | jq -c '.stop_reason_counts // {}')
+  thinking_message_count=$(echo "$metadata" | jq -r '.thinking_message_count // 0')
+  thinking_total_length=$(echo "$metadata" | jq -r '.thinking_total_length // 0')
+  service_tier=$(echo "$metadata" | jq -r '.service_tier // empty')
+  has_sidechain=$(echo "$metadata" | jq -r 'if .has_sidechain then 1 else 0 end')
+  system_error_count=$(echo "$metadata" | jq -r '.system_error_count // 0')
+  system_retry_count=$(echo "$metadata" | jq -r '.system_retry_count // 0')
+  avg_turn_duration_ms=$(echo "$metadata" | jq -r '.avg_turn_duration_ms // empty')
+  tool_result_error_count=$(echo "$metadata" | jq -r '.tool_result_error_count // 0')
+  compaction_count=$(echo "$metadata" | jq -r '.compaction_count // 0')
+  # Session context fields (migration 007)
+  session_cwd=$(echo "$metadata" | jq -r '.cwd // empty')
+  git_branch=$(echo "$metadata" | jq -r '.git_branch // empty')
+  assistant_message_timestamps=$(echo "$metadata" | jq -c '.assistant_message_timestamps // []')
+  background_task_count=$(echo "$metadata" | jq -r '.background_task_count // 0')
+  web_search_count=$(echo "$metadata" | jq -r '.web_search_count // 0')
   file_size=$(stat -f%z "$jsonl_file" 2>/dev/null || stat --printf="%s" "$jsonl_file" 2>/dev/null || echo "0")
+
+  # Calculate estimated cost based on model rate card (per million tokens)
+  # Rates loaded from templates/rates.json (ships with framework, updated on n2o sync)
+  estimated_cost="NULL"
+  if [[ -n "$model" && "$total_input_tokens" -gt 0 ]]; then
+    input_rate=0; output_rate=0
+
+    # Try to load rates from rates.json (framework or project copy)
+    rates_file=""
+    for candidate in "$PROJECT_ROOT/templates/rates.json" "$PROJECT_ROOT/.pm/rates.json"; do
+      [[ -f "$candidate" ]] && rates_file="$candidate" && break
+    done
+
+    if [[ -n "$rates_file" ]]; then
+      # Determine model family from model string
+      model_family="sonnet"
+      case "$model" in
+        *opus*)   model_family="opus" ;;
+        *sonnet*) model_family="sonnet" ;;
+        *haiku*)  model_family="haiku" ;;
+      esac
+      input_rate=$(jq -r ".models.${model_family}.input // 3" "$rates_file")
+      output_rate=$(jq -r ".models.${model_family}.output // 15" "$rates_file")
+    else
+      # Fallback: hardcoded rates (sonnet default)
+      case "$model" in
+        *opus*)   input_rate=15;     output_rate=75 ;;
+        *sonnet*) input_rate=3;      output_rate=15 ;;
+        *haiku*)  input_rate="0.25"; output_rate="1.25" ;;
+        *)        input_rate=3;      output_rate=15 ;;
+      esac
+    fi
+
+    estimated_cost=$(awk "BEGIN {printf \"%.6f\", ($total_input_tokens * $input_rate + $total_output_tokens * $output_rate) / 1000000}")
+  fi
 
   # For subagents, use the parent session ID from the directory, but the
   # subagent's own sessionId is actually the parent's sessionId in the JSONL.
@@ -246,6 +452,21 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   fi
 
   # -------------------------------------------------------------------------
+  # Session-to-task linkage (Gap 1)
+  # Look up the task claimed by this session to populate sprint/task_num
+  # -------------------------------------------------------------------------
+  task_sprint=""
+  task_num=""
+  # Use the base session_id (without subagent suffix) for lookup
+  lookup_session="$session_id"
+  [[ -n "$parent_session_id" ]] && lookup_session="$parent_session_id"
+  task_info=$(sqlite3 "$DB" "SELECT sprint || '|' || task_num FROM tasks WHERE session_id = '${lookup_session//\'/\'\'}' LIMIT 1;" 2>/dev/null)
+  if [[ -n "$task_info" ]]; then
+    task_sprint="${task_info%%|*}"
+    task_num="${task_info##*|}"
+  fi
+
+  # -------------------------------------------------------------------------
   # Insert into transcripts table
   # -------------------------------------------------------------------------
   # Escape single quotes for SQL
@@ -254,6 +475,12 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   sql_model="${model//\'/\'\'}"
   sql_parent="${parent_session_id//\'/\'\'}"
   sql_agent="${agent_id//\'/\'\'}"
+  sql_user_ts="${user_message_timestamps//\'/\'\'}"
+  sql_stop_reasons="${stop_reason_counts//\'/\'\'}"
+  sql_service_tier="${service_tier//\'/\'\'}"
+  sql_cwd="${session_cwd//\'/\'\'}"
+  sql_git_branch="${git_branch//\'/\'\'}"
+  sql_assistant_ts="${assistant_message_timestamps//\'/\'\'}"
 
   # Build nullable fields
   parent_val="NULL"; [[ -n "$parent_session_id" ]] && parent_val="'$sql_parent'"
@@ -261,18 +488,82 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   model_val="NULL";  [[ -n "$model" ]] && model_val="'$sql_model'"
   start_val="NULL";  [[ -n "$started_at" ]] && start_val="'$started_at'"
   end_val="NULL";    [[ -n "$ended_at" ]] && end_val="'$ended_at'"
+  sprint_val="NULL"; [[ -n "$task_sprint" ]] && sprint_val="'${task_sprint//\'/\'\'}'"
+  tasknum_val="NULL"; [[ -n "$task_num" ]] && tasknum_val="$task_num"
+  service_tier_val="NULL"; [[ -n "$service_tier" ]] && service_tier_val="'$sql_service_tier'"
+  avg_turn_ms_val="NULL"; [[ -n "$avg_turn_duration_ms" ]] && avg_turn_ms_val="$avg_turn_duration_ms"
+  cwd_val="NULL"; [[ -n "$session_cwd" ]] && cwd_val="'$sql_cwd'"
+  git_branch_val="NULL"; [[ -n "$git_branch" ]] && git_branch_val="'$sql_git_branch'"
 
-  sqlite3 "$DB" "INSERT INTO transcripts (
-    session_id, parent_session_id, agent_id, file_path, file_size_bytes,
-    message_count, user_message_count, assistant_message_count,
-    tool_call_count, total_input_tokens, total_output_tokens,
-    model, started_at, ended_at
-  ) VALUES (
-    '$sql_session_id', $parent_val, $agent_val, '$sql_file_path', $file_size,
-    $message_count, $user_message_count, $assistant_message_count,
-    $tool_call_count, $total_input_tokens, $total_output_tokens,
-    $model_val, $start_val, $end_val
-  );"
+  if [[ "$UPDATE_MODE" == "true" ]]; then
+    # File grew since last collection — UPDATE existing row with fresh data
+    sqlite3 "$DB" "UPDATE transcripts SET
+      file_size_bytes = $file_size,
+      message_count = $message_count, user_message_count = $user_message_count,
+      assistant_message_count = $assistant_message_count,
+      tool_call_count = $tool_call_count,
+      total_input_tokens = $total_input_tokens, total_output_tokens = $total_output_tokens,
+      estimated_cost_usd = $estimated_cost, model = $model_val,
+      started_at = $start_val, ended_at = $end_val,
+      sprint = $sprint_val, task_num = $tasknum_val,
+      user_message_timestamps = '$sql_user_ts',
+      cache_read_tokens = $cache_read_tokens, cache_creation_tokens = $cache_creation_tokens,
+      total_user_content_length = $total_user_content_length,
+      stop_reason_counts = '$sql_stop_reasons',
+      thinking_message_count = $thinking_message_count, thinking_total_length = $thinking_total_length,
+      service_tier = $service_tier_val, has_sidechain = $has_sidechain,
+      system_error_count = $system_error_count, system_retry_count = $system_retry_count,
+      avg_turn_duration_ms = $avg_turn_ms_val,
+      tool_result_error_count = $tool_result_error_count, compaction_count = $compaction_count,
+      cwd = $cwd_val, git_branch = $git_branch_val,
+      assistant_message_timestamps = '$sql_assistant_ts',
+      background_task_count = $background_task_count, web_search_count = $web_search_count,
+      synced_at = NULL, sync_attempts = 0, sync_error = NULL
+    WHERE file_path = '$sql_file_path';"
+  else
+    sqlite3 "$DB" "INSERT INTO transcripts (
+      session_id, parent_session_id, agent_id, file_path, file_size_bytes,
+      message_count, user_message_count, assistant_message_count,
+      tool_call_count, total_input_tokens, total_output_tokens,
+      estimated_cost_usd, model, started_at, ended_at,
+      sprint, task_num,
+      user_message_timestamps, cache_read_tokens, cache_creation_tokens,
+      total_user_content_length,
+      stop_reason_counts, thinking_message_count, thinking_total_length,
+      service_tier, has_sidechain, system_error_count, system_retry_count,
+      avg_turn_duration_ms, tool_result_error_count, compaction_count,
+      cwd, git_branch, assistant_message_timestamps,
+      background_task_count, web_search_count
+    ) VALUES (
+      '$sql_session_id', $parent_val, $agent_val, '$sql_file_path', $file_size,
+      $message_count, $user_message_count, $assistant_message_count,
+      $tool_call_count, $total_input_tokens, $total_output_tokens,
+      $estimated_cost, $model_val, $start_val, $end_val,
+      $sprint_val, $tasknum_val,
+      '$sql_user_ts', $cache_read_tokens, $cache_creation_tokens,
+      $total_user_content_length,
+      '$sql_stop_reasons', $thinking_message_count, $thinking_total_length,
+      $service_tier_val, $has_sidechain, $system_error_count, $system_retry_count,
+      $avg_turn_ms_val, $tool_result_error_count, $compaction_count,
+      $cwd_val, $git_branch_val, '$sql_assistant_ts',
+      $background_task_count, $web_search_count
+    );"
+  fi
+
+  # -------------------------------------------------------------------------
+  # Git diff stats (Gap 5) — populate lines_added/lines_removed on linked tasks
+  # -------------------------------------------------------------------------
+  if [[ -n "$task_sprint" && -n "$task_num" ]]; then
+    commit_hash=$(sqlite3 "$DB" "SELECT commit_hash FROM tasks WHERE sprint = '${task_sprint//\'/\'\'}' AND task_num = $task_num;" 2>/dev/null)
+    if [[ -n "$commit_hash" && "$commit_hash" != "NULL" ]]; then
+      diff_stats=$(git diff --numstat "${commit_hash}^" "$commit_hash" 2>/dev/null | awk '{ added += $1; removed += $2 } END { print added+0 "|" removed+0 }')
+      if [[ -n "$diff_stats" ]]; then
+        diff_added="${diff_stats%%|*}"
+        diff_removed="${diff_stats##*|}"
+        sqlite3 "$DB" "UPDATE tasks SET lines_added = $diff_added, lines_removed = $diff_removed WHERE sprint = '${task_sprint//\'/\'\'}' AND task_num = $task_num AND lines_added IS NULL;" 2>/dev/null || true
+      fi
+    fi
+  fi
 
   # -------------------------------------------------------------------------
   # Insert tool calls into workflow_events
@@ -282,6 +573,11 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   if [[ -n "$tool_calls_json" ]]; then
     # Build a batch SQL statement for efficiency
     sql_batch="BEGIN TRANSACTION;"
+
+    # If updating a growing session, delete old events first to avoid duplicates
+    if [[ "$UPDATE_MODE" == "true" ]]; then
+      sql_batch+="DELETE FROM workflow_events WHERE session_id = '$sql_session_id' AND event_type IN ('tool_call', 'skill_invoked', 'subagent_spawn');"
+    fi
 
     while IFS= read -r tc; do
       tc_tool_name=$(echo "$tc" | jq -r '.tool_name')
@@ -297,6 +593,8 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       # Determine event_type
       if [[ "$tc_tool_name" == "Task" ]]; then
         event_type="subagent_spawn"
+      elif [[ "$tc_tool_name" == "Skill" && -n "$tc_skill_name" ]]; then
+        event_type="skill_invoked"
       else
         event_type="tool_call"
       fi
@@ -304,6 +602,13 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       # Build nullable fields
       ts_val="CURRENT_TIMESTAMP"; [[ -n "$tc_timestamp" ]] && ts_val="'$tc_timestamp'"
       skill_val="NULL"; [[ -n "$tc_skill_name" ]] && skill_val="'${tc_skill_name//\'/\'\'}'"
+      skill_version_val="NULL"
+      if [[ -n "$tc_skill_name" ]]; then
+        sv=$(get_skill_version "$tc_skill_name")
+        if [[ -n "$sv" ]]; then
+          skill_version_val="'${sv//\'/\'\'}'"
+        fi
+      fi
       evt_agent_val="NULL"; [[ -n "$agent_id" ]] && evt_agent_val="'$sql_agent'"
       input_tokens_val="NULL"; [[ -n "$tc_input_tokens" ]] && input_tokens_val="$tc_input_tokens"
       output_tokens_val="NULL"; [[ -n "$tc_output_tokens" ]] && output_tokens_val="$tc_output_tokens"
@@ -319,12 +624,12 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
       fi
 
       sql_batch+="INSERT INTO workflow_events (
-  timestamp, session_id, event_type, tool_name, tool_use_id, skill_name, agent_id,
+  timestamp, session_id, sprint, task_num, event_type, tool_name, tool_use_id, skill_name, skill_version, agent_id,
   input_tokens, output_tokens, tool_calls_in_msg, metadata
 ) VALUES (
-  $ts_val, '$sql_session_id', '$event_type',
+  $ts_val, '$sql_session_id', $sprint_val, $tasknum_val, '$event_type',
   '${tc_tool_name//\'/\'\'}', '${tc_tool_use_id//\'/\'\'}',
-  $skill_val, $evt_agent_val,
+  $skill_val, $skill_version_val, $evt_agent_val,
   $input_tokens_val, $output_tokens_val, $tool_calls_in_msg_val, $metadata_val
 );"
     done <<< "$tool_calls_json"
@@ -336,10 +641,12 @@ for jsonl_file in "${JSONL_FILES[@]}"; do
   ((NEW_COUNT++)) || true
 
   # Progress indicator
+  verb="Indexed"
+  [[ "$UPDATE_MODE" == "true" ]] && verb="Updated"
   if [[ -n "$parent_session_id" ]]; then
-    log_success "Indexed subagent: $agent_id ($message_count msgs, $tool_call_count tools, ${total_input_tokens}+${total_output_tokens} tokens)"
+    log_success "$verb subagent: $agent_id ($message_count msgs, $tool_call_count tools, ${total_input_tokens}+${total_output_tokens} tokens)"
   else
-    log_success "Indexed session: ${session_id:0:8}... ($message_count msgs, $tool_call_count tools, ${total_input_tokens}+${total_output_tokens} tokens)"
+    log_success "$verb session: ${session_id:0:8}... ($message_count msgs, $tool_call_count tools, ${total_input_tokens}+${total_output_tokens} tokens)"
   fi
 done
 
@@ -365,3 +672,25 @@ log_info "  Transcripts: $transcript_count"
 log_info "  Workflow events: $event_count"
 log_info "  Total input tokens: $total_tokens_in"
 log_info "  Total output tokens: $total_tokens_out"
+
+# ---------------------------------------------------------------------------
+# Sync to Supabase (single batch, non-blocking)
+# ---------------------------------------------------------------------------
+# Run once at the end rather than per-transcript to avoid spawning N processes.
+# Fire-and-forget in background so it doesn't block the SessionEnd hook timeout.
+SYNC_SCRIPT="$PROJECT_ROOT/scripts/coordination/sync-task-state.sh"
+if [[ $NEW_COUNT -gt 0 && -f "$SYNC_SCRIPT" ]]; then
+  bash "$SYNC_SCRIPT" sync-transcripts 2>/dev/null &
+  log_info "  Cloud sync: started in background ($NEW_COUNT new)"
+else
+  synced_count=$(sqlite3 "$DB" "SELECT COUNT(*) FROM transcripts WHERE synced_at IS NOT NULL;")
+  unsynced_count=$(sqlite3 "$DB" "SELECT COUNT(*) FROM transcripts WHERE synced_at IS NULL AND (sync_attempts < 5 OR sync_attempts IS NULL);")
+  stuck_count=$(sqlite3 "$DB" "SELECT COUNT(*) FROM transcripts WHERE synced_at IS NULL AND sync_attempts >= 5;")
+  log_info "  Synced to cloud: $synced_count"
+  if [[ "$unsynced_count" -gt 0 ]]; then
+    log_warn "  Unsynced: $unsynced_count (run: bash scripts/coordination/sync-task-state.sh sync-transcripts)"
+  fi
+  if [[ "$stuck_count" -gt 0 ]]; then
+    log_error "  Permanently failed: $stuck_count (check: sqlite3 .pm/tasks.db \"SELECT session_id, sync_error FROM transcripts WHERE sync_attempts >= 5;\")"
+  fi
+fi
