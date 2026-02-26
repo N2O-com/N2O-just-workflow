@@ -440,6 +440,93 @@ test_stats_empty_db() {
   assert_equals "0" "$count" "Empty DB skill_usage should have 0 rows"
 }
 
+# -----------------------------------------------------------------------------
+# Sync health tests
+# -----------------------------------------------------------------------------
+
+# Helper: seed transcripts with sync state
+seed_sync_data() {
+  local db="$1"
+  sqlite3 "$db" <<'SQL'
+    INSERT INTO transcripts (session_id, message_count, total_input_tokens, total_output_tokens, started_at, synced_at, sync_attempts, sync_error)
+    VALUES
+      ('synced-1', 10, 1000, 500, '2026-02-25 10:00:00', '2026-02-25 10:05:00', 0, NULL),
+      ('synced-2', 8, 800, 400, '2026-02-25 11:00:00', '2026-02-25 11:05:00', 0, NULL),
+      ('synced-3', 12, 1200, 600, '2026-02-25 12:00:00', '2026-02-25 12:05:00', 0, NULL),
+      ('pending-1', 5, 500, 250, '2026-02-25 13:00:00', NULL, 2, 'timeout'),
+      ('failed-1', 3, 300, 150, '2026-02-25 14:00:00', NULL, 5, 'bad data');
+SQL
+}
+
+test_stats_sync_health_json_key() {
+  local db="$TEST_DIR/.pm/tasks.db"
+  seed_sync_data "$db"
+  # Set Supabase config so sync health shows configured
+  echo '{"n2o_version":"1.0.0","supabase":{"url":"https://test.supabase.co","key_env":"SUPABASE_KEY"}}' > "$TEST_DIR/.pm/config.json"
+
+  local output
+  output=$(run_n2o stats --json 2>&1)
+
+  local has_sync
+  has_sync=$(echo "$output" | jq 'has("sync_health")' 2>/dev/null)
+  assert_equals "true" "$has_sync" "JSON should have 'sync_health' key"
+}
+
+test_stats_sync_health_json_values() {
+  local db="$TEST_DIR/.pm/tasks.db"
+  seed_sync_data "$db"
+  echo '{"n2o_version":"1.0.0","supabase":{"url":"https://test.supabase.co","key_env":"SUPABASE_KEY"}}' > "$TEST_DIR/.pm/config.json"
+
+  local output
+  output=$(run_n2o stats --json 2>&1)
+
+  local total synced pending failed configured
+  total=$(echo "$output" | jq '.sync_health.total' 2>/dev/null)
+  synced=$(echo "$output" | jq '.sync_health.synced' 2>/dev/null)
+  pending=$(echo "$output" | jq '.sync_health.pending' 2>/dev/null)
+  failed=$(echo "$output" | jq '.sync_health.permanently_failed' 2>/dev/null)
+  configured=$(echo "$output" | jq '.sync_health.supabase_configured' 2>/dev/null)
+
+  assert_equals "5" "$total" "sync_health.total should be 5"
+  assert_equals "3" "$synced" "sync_health.synced should be 3"
+  assert_equals "1" "$pending" "sync_health.pending should be 1"
+  assert_equals "1" "$failed" "sync_health.permanently_failed should be 1"
+  assert_equals "true" "$configured" "sync_health.supabase_configured should be true"
+}
+
+test_stats_sync_health_not_configured() {
+  local db="$TEST_DIR/.pm/tasks.db"
+  # No Supabase config
+  echo '{"n2o_version":"1.0.0"}' > "$TEST_DIR/.pm/config.json"
+  unset SUPABASE_URL 2>/dev/null || true
+
+  local output
+  output=$(run_n2o stats --json 2>&1)
+
+  local configured
+  configured=$(echo "$output" | jq '.sync_health.supabase_configured' 2>/dev/null)
+  assert_equals "false" "$configured" "sync_health.supabase_configured should be false when not configured"
+}
+
+test_stats_sync_health_terminal_section() {
+  local output
+  output=$("$N2O" stats 2>&1)
+
+  assert_output_contains "$output" "Sync Health" "Terminal output should have Sync Health section"
+}
+
+test_stats_sync_health_terminal_not_configured() {
+  local db="$TEST_DIR/.pm/tasks.db"
+  echo '{"n2o_version":"1.0.0"}' > "$TEST_DIR/.pm/config.json"
+  unset SUPABASE_URL 2>/dev/null || true
+
+  local output
+  output=$(run_n2o stats 2>&1)
+
+  assert_output_contains "$output" "Sync Health" "Should have Sync Health header"
+  assert_output_contains "$output" "local-only" "Should show local-only message when not configured"
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -465,6 +552,14 @@ run_test "Compare JSON precision values match seeds" test_stats_compare_json_pre
 run_test "Compare terminal shows all sections"       test_stats_compare_terminal_sections
 run_test "Compare no-data terminal shows fallbacks"  test_stats_compare_no_data_terminal
 run_test "Compare no-data JSON returns empty arrays" test_stats_compare_no_data_json
+
+echo ""
+echo -e "${BOLD}Sync Health Tests${NC}"
+run_test "Sync health JSON key present"            test_stats_sync_health_json_key
+run_test "Sync health JSON values correct"         test_stats_sync_health_json_values
+run_test "Sync health not configured JSON"         test_stats_sync_health_not_configured
+run_test "Sync health terminal section present"    test_stats_sync_health_terminal_section
+run_test "Sync health terminal not configured msg" test_stats_sync_health_terminal_not_configured
 
 echo ""
 echo -e "${BOLD}SQL Query Tests${NC}"

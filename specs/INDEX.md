@@ -34,6 +34,7 @@
 | [agent-teams.md](agent-teams.md) | Not Started | 5 | coordination | Claude Code Agent Teams integration: auto-teaming, tmux, quality hooks |
 | [workflow-dashboard.md](workflow-dashboard.md) | Not Started | 7, 8 | observability | Next.js dashboard: sprint progress, task board, velocity charts |
 | [subscription-management.md](subscription-management.md) | Not Started | 8 | — | Admin CLI for per-developer Claude subscription tracking |
+| [future-phases.md](future-phases.md) | Active | — | — | Deferred research and features not blocking rollout |
 
 ---
 

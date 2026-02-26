@@ -498,6 +498,36 @@ test_merge_autoclaim_maintains_session_id() {
   assert_equals "sess-abc-123" "$session_id" "Auto-claimed task should inherit session_id from completed task"
 }
 
+# -----------------------------------------------------------------------------
+# Claim freshness tests (pull integration)
+# -----------------------------------------------------------------------------
+
+test_claim_does_not_double_claim() {
+  # Simulate: another developer claimed task 1 already (in the DB, as if pulled)
+  sqlite3 "$TEST_DIR/.pm/tasks.db" "
+    UPDATE tasks SET owner = 'other-agent', status = 'red'
+    WHERE sprint = 'test-sprint' AND task_num = 1;
+  "
+
+  local claim_json
+  claim_json=$(cd "$TEST_DIR" && bash "$CLAIM_SCRIPT" --no-verify 2>/dev/null)
+
+  # Should claim task 2, not task 1 (which is already taken)
+  local claimed_num
+  claimed_num=$(echo "$claim_json" | jq -r '.task_num')
+  assert_equals "2" "$claimed_num" "Should not claim task already owned by another agent"
+}
+
+test_claim_source_references_supabase_client() {
+  # Verify that claim-task.sh sources supabase-client.sh (integration hook present)
+  local script_content
+  script_content=$(cat "$CLAIM_SCRIPT")
+  if [[ "$script_content" != *"supabase_pull_tasks"* ]]; then
+    echo "    ASSERT FAILED: claim-task.sh should reference supabase_pull_tasks" >&2
+    return 1
+  fi
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -533,6 +563,11 @@ run_test "Hook shows done_when criteria"                test_hook_shows_done_whe
 run_test "Hook handles no available tasks gracefully"   test_hook_no_tasks_no_crash
 run_test "Hook skips non-startup events"                test_hook_skips_non_startup
 run_test "Hook skips non-N2O projects"                  test_hook_skips_non_n2o_project
+
+echo ""
+echo -e "${BOLD}Claim Freshness${NC}"
+run_test "Does not double-claim tasks owned by others"  test_claim_does_not_double_claim
+run_test "Claim script references pull integration"     test_claim_source_references_supabase_client
 
 echo ""
 echo -e "${BOLD}Merge Queue — Auto-Claim${NC}"

@@ -16,7 +16,8 @@
 4. [Goal 4: Actually an Accelerant](#4-actually-an-accelerant) — Leadership metrics prove the system works
 5. [E2E Verification](#e2e-verification) — 27 e2e tests + 9-check meta-audit
 6. [Remaining Gaps](#remaining-gaps) — What's left and what's deferred
-7. [Phase 2 (Deferred)](#phase-2-deferred) — Dashboard, NLP, subscription management
+7. [Next Steps (Pre-Rollout)](#next-steps-pre-rollout) — Smoke test, onboarding doc, Supabase setup, troubleshooting
+8. [Phase 2 (Deferred)](#phase-2-deferred) — Theory, dashboard, NLP, subscription management
 
 ---
 
@@ -24,6 +25,7 @@
 
 | Date | Change |
 |------|--------|
+| 2026-02-25 | Goal 3: Sync health in `n2o stats` — terminal + JSON output, Supabase-not-configured handling. Goal 1: Real-time task pull from Supabase with safe-merge logic, blocking pull in claim, background pull on session start. |
 | 2026-02-25 | Goal 3: Diff-based Supabase transcript sync — batch upsert, `synced_at` tracking, crash-truncated JSONL recovery. 35 Supabase tests, 29 transcript tests. |
 | 2026-02-25 | Goal 3: Session context fields — cwd, git_branch, assistant_message_timestamps, background_task_count, web_search_count. Enables idle time analysis and full session context. |
 | 2026-02-25 | Goal 3: Comprehensive JSONL extraction — stop reasons, thinking blocks, service tier, sidechain, system errors/retries/compactions, turn durations, tool result errors. 3 new analytics views (brain_cycles_per_task, context_loading_time, session_health). |
@@ -136,6 +138,8 @@ Every datapoint that might be useful later: time-to-complete, reversions, dollar
 | No cloud sync of transcripts | Diff-based Supabase sync — batch POST of unsynced rows, `synced_at` tracking, `developer_session_summary` view | `supabase-client.sh`, `supabase-schema.sql`, `sync-task-state.sh` | Done |
 | Crash-truncated JSONL lost forever | Pre-validate with jq; if last line is truncated, strip it and recover N-1 messages | `collect-transcripts.sh` | Done |
 | Per-transcript sync overhead | Replaced N background processes with single batch POST at end of collector run | `collect-transcripts.sh`, `supabase-client.sh` | Done |
+| No sync health visibility | Sync Health section in `n2o stats` (terminal + JSON): total/synced/pending/failed counts, last sync time | `n2o:cmd_stats()` | Done |
+| No real-time task state | `supabase_pull_tasks()` pulls task state from Supabase with safe-merge: skip owned tasks, status-only-advances, definitions untouched, supersession handling | `supabase-client.sh`, `claim-task.sh`, `n2o-session-hook.sh` | Done |
 
 **Verification:**
 - `test-n2o-e2e.sh`: `test_e2e_transcript_collection` asserts exact message counts (7 total, 2 user, 4 assistant), token sums (2600 input, 1050 output), and tool call count (6)
@@ -249,10 +253,70 @@ The full user journey is tested end-to-end in `tests/test-n2o-e2e.sh` (27 tests)
 
 ---
 
+## Next Steps (Pre-Rollout)
+
+These must be done before handing N2O to another developer.
+
+### 1. Hands-on smoke test on a real project
+Pick an existing project (not the framework repo) and run the full journey: `n2o init`, open Claude Code, claim a task, complete it, check `n2o stats`. Document every friction point, surprise, missing default, or confusing output. This is the highest-value pre-rollout activity — automated tests can't catch UX issues.
+
+### 2. Write the onboarding walkthrough
+Write `01-getting-started/ONBOARDING.md` as you do the smoke test. Cover the full path:
+- Prerequisites (Claude Code, jq, sqlite3, git)
+- Clone/install N2O framework
+- `n2o init <your-project>` — what it creates, what to expect
+- `n2o check` — verify everything is healthy
+- Open Claude Code — first session auto-claims a task
+- Set up Supabase (if multi-machine)
+- Common "what do I do when..." scenarios
+
+The existing quickstart/setup docs cover pieces but there's no single end-to-end guide for "I have a real project, now what?"
+
+### 3. Supabase setup doc
+Even without `n2o setup --supabase` as a CLI command, document the manual steps:
+- Create Supabase project
+- Run `supabase-schema.sql` in the SQL editor
+- Set `SUPABASE_URL` and `SUPABASE_KEY` env vars (or configure in `.pm/config.json`)
+- Verify with `n2o sync --pull-tasks`
+
+This unblocks multi-machine coordination without waiting for automation.
+
+### 4. Troubleshooting guide
+Document recovery paths for common failures:
+- `n2o init` fails (missing deps, permissions, existing `.pm/` directory)
+- Transcript sync stuck (`sync_attempts >= 5` — how to diagnose and retry)
+- Orphaned worktrees (how to clean up after interrupted claims)
+- Database corruption (re-apply schema, re-collect transcripts)
+- Supabase unreachable (what degrades, what still works)
+
+### 5. Manual smoke test checklist
+A short checklist (not the full onboarding doc) for verifying a fresh install works:
+```
+1. n2o init <path>           → expect "Initialized successfully"
+2. n2o check                 → expect exit 0, all checks green
+3. n2o stats                 → expect all sections render (even if empty)
+4. n2o stats --json | jq .   → expect valid JSON with sync_health key
+5. Open Claude Code          → expect session hook fires, developer context shown
+```
+
+### 6. Theoretical clarity before dashboard
+The leadership dashboard (`specs/workflow-dashboard.md`) is downstream of getting the Output/Hour framework and brain cycle model clear. The right sequence:
+1. **Theory / HTML diagram** — nail down the visual model
+2. **Metrics definition refinement** — validate the 10 metrics map to the theory
+3. **Dashboard** — build it knowing what story the data tells
+
+Don't build the dashboard until steps 1-2 are done, or you'll redesign it.
+
+---
+
 ## Phase 2 (Deferred)
 
 | Item | Spec | Description |
 |------|------|-------------|
+| Theoretical clarity + HTML diagram | `specs/future-phases.md` | Visual Output/Hour framework — prerequisite for dashboard |
 | Observatory dashboard | `specs/workflow-dashboard.md` | GraphQL API + Next.js dashboard for leadership metrics |
 | NLP analysis nodes | — | Natural language analysis of transcript content |
 | Subscription management | `specs/subscription-management.md` | Per-developer plan tracking, admin-only CLI |
+| Supabase setup automation | `specs/future-phases.md` | `n2o setup --supabase` guided CLI setup |
+| Clawdbot workflow research | `specs/future-phases.md` | Study high-velocity shipping patterns |
+| Git policy documentation | `specs/future-phases.md` | Branching strategy, merge conventions, worktree lifecycle |

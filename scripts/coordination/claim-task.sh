@@ -122,6 +122,22 @@ if [ -z "$AGENT_ID" ]; then
     AGENT_ID="agent-${HOSTNAME_SHORT}-$$-$(date +%s)"
 fi
 
+# --- Pull fresh task state from Supabase (blocking) ---
+
+if [ "${_SUPABASE_CONFIGURED:-false}" = "true" ]; then
+    # Pull all active sprints so we see what others have claimed
+    if [ -n "$SPRINT_FILTER" ]; then
+        supabase_pull_tasks "$SPRINT_FILTER" "$DB_PATH" "$AGENT_ID" 2>/dev/null || true
+    else
+        # Pull all sprints that have pending tasks
+        _pull_sprints=$(sqlite3 "$DB_PATH" "SELECT DISTINCT sprint FROM tasks WHERE status='pending';" 2>/dev/null)
+        while IFS= read -r _ps; do
+            [ -z "$_ps" ] && continue
+            supabase_pull_tasks "$_ps" "$DB_PATH" "$AGENT_ID" 2>/dev/null || true
+        done <<< "$_pull_sprints"
+    fi
+fi
+
 # --- Get available tasks ---
 
 SPRINT_WHERE=""

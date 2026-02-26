@@ -8,6 +8,7 @@ set -e
 #   n2o init <project-path> [--interactive] [--register]
 #   n2o sync <project-path> [--dry-run] [--force] [--quiet] [--only=...]
 #   n2o sync --all [--dry-run] [--force]
+#   n2o sync --pull-tasks
 #   n2o pin <project-path> [<version>] [--unpin]
 #   n2o check <project-path>
 #   n2o stats [--json] [--compare <skill-name>]
@@ -1204,20 +1205,62 @@ cmd_sync() {
   local force=false
   local sync_only=""
   local quiet=false
+  local pull_tasks=false
 
   # Parse args
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dry-run)  dry_run=true; shift ;;
-      --all)      sync_all=true; shift ;;
-      --force)    force=true; shift ;;
-      --quiet)    quiet=true; shift ;;
-      --only=*)   sync_only="${1#--only=}"; shift ;;
-      --only)     sync_only="$2"; shift 2 ;;
-      -*)         log_error "Unknown option: $1"; exit 1 ;;
-      *)          project_path="$1"; shift ;;
+      --dry-run)      dry_run=true; shift ;;
+      --all)          sync_all=true; shift ;;
+      --force)        force=true; shift ;;
+      --quiet)        quiet=true; shift ;;
+      --pull-tasks)   pull_tasks=true; shift ;;
+      --only=*)       sync_only="${1#--only=}"; shift ;;
+      --only)         sync_only="$2"; shift 2 ;;
+      -*)             log_error "Unknown option: $1"; exit 1 ;;
+      *)              project_path="$1"; shift ;;
     esac
   done
+
+  # Handle --pull-tasks: pull task state from Supabase for all active sprints
+  if $pull_tasks; then
+    local db="$N2O_DIR/.pm/tasks.db"
+    if [[ ! -f "$db" ]]; then
+      log_error "Database not found at $db"
+      exit 1
+    fi
+
+    local supabase_client="$N2O_DIR/scripts/coordination/supabase-client.sh"
+    if [[ ! -f "$supabase_client" ]]; then
+      log_error "supabase-client.sh not found"
+      exit 1
+    fi
+
+    source "$supabase_client"
+    if [[ "$_SUPABASE_CONFIGURED" != "true" ]]; then
+      log_warn "Supabase not configured — cannot pull tasks"
+      exit 1
+    fi
+
+    local my_id
+    my_id=$(git config user.name 2>/dev/null || hostname -s 2>/dev/null || echo "unknown")
+
+    local sprints
+    sprints=$(sqlite3 "$db" "SELECT DISTINCT sprint FROM tasks WHERE status IN ('pending','red');" 2>/dev/null)
+    if [[ -z "$sprints" ]]; then
+      log_info "No active sprints to pull"
+      return
+    fi
+
+    log_header "Pulling task state from Supabase"
+    while IFS= read -r s; do
+      [[ -z "$s" ]] && continue
+      log_info "Pulling sprint: $s"
+      supabase_pull_tasks "$s" "$db" "$my_id" || true
+    done <<< "$sprints"
+    log_success "Task pull complete"
+    return
+  fi
 
   if [[ -n "${sync_only:-}" ]]; then
     validate_sync_categories "$sync_only"
@@ -1873,6 +1916,52 @@ cmd_stats() {
     " 2>/dev/null || echo "[]")
     [[ -z "$skill_versions_json" ]] && skill_versions_json="[]"
 
+    # Sync health: check Supabase config and query transcript sync state
+    local sync_health_json
+    local supabase_configured=false
+    if [[ -n "${SUPABASE_URL:-}" ]]; then
+      supabase_configured=true
+    elif [[ -f "$N2O_DIR/.pm/config.json" ]]; then
+      local sb_url
+      sb_url=$(jq -r '.supabase.url // ""' "$N2O_DIR/.pm/config.json" 2>/dev/null)
+      [[ -n "$sb_url" ]] && supabase_configured=true
+    fi
+
+    sync_health_json=$(sqlite3 "$db" "
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE synced_at IS NOT NULL) as synced,
+        COUNT(*) FILTER (WHERE synced_at IS NULL AND sync_attempts < 5) as pending,
+        COUNT(*) FILTER (WHERE synced_at IS NULL AND sync_attempts >= 5) as permanently_failed,
+        MAX(synced_at) as last_sync_at
+      FROM transcripts;
+    " -separator '|' 2>/dev/null || echo "0|0|0|0|")
+
+    local sh_total sh_synced sh_pending sh_failed sh_last_sync
+    IFS='|' read -r sh_total sh_synced sh_pending sh_failed sh_last_sync <<< "$sync_health_json"
+    sh_total="${sh_total:-0}"
+    sh_synced="${sh_synced:-0}"
+    sh_pending="${sh_pending:-0}"
+    sh_failed="${sh_failed:-0}"
+    sh_last_sync="${sh_last_sync:-null}"
+
+    local sync_health_obj
+    sync_health_obj=$(jq -n \
+      --argjson total "$sh_total" \
+      --argjson synced "$sh_synced" \
+      --argjson pending "$sh_pending" \
+      --argjson permanently_failed "$sh_failed" \
+      --arg last_sync_at "$sh_last_sync" \
+      --argjson supabase_configured "$supabase_configured" \
+      '{
+        total: $total,
+        synced: $synced,
+        pending: $pending,
+        permanently_failed: $permanently_failed,
+        last_sync_at: (if $last_sync_at == "null" or $last_sync_at == "" then null else $last_sync_at end),
+        supabase_configured: $supabase_configured
+      }')
+
     # Compose top-level JSON
     jq -n \
       --argjson sessions "$sessions_json" \
@@ -1884,6 +1973,7 @@ cmd_stats() {
       --argjson precision "$precision_json" \
       --argjson blowups "$blowup_json" \
       --argjson skill_versions "$skill_versions_json" \
+      --argjson sync_health "$sync_health_obj" \
       '{
         sessions: ($sessions[0] // {}),
         leadership_metrics: ($leadership[0] // {}),
@@ -1895,7 +1985,8 @@ cmd_stats() {
           precision: $precision,
           blow_up_factors: $blowups
         },
-        skill_versions: $skill_versions
+        skill_versions: $skill_versions,
+        sync_health: $sync_health
       }'
     return
   fi
@@ -2047,6 +2138,78 @@ cmd_stats() {
     done <<< "$sprint_data"
   else
     echo -e "  ${YELLOW}No sprint data available.${NC}"
+  fi
+
+  # === Section 3b: Sync Health ===
+  log_header "Sync Health"
+
+  local supabase_configured=false
+  if [[ -n "${SUPABASE_URL:-}" ]]; then
+    supabase_configured=true
+  elif [[ -f "$N2O_DIR/.pm/config.json" ]]; then
+    local sb_url
+    sb_url=$(jq -r '.supabase.url // ""' "$N2O_DIR/.pm/config.json" 2>/dev/null)
+    [[ -n "$sb_url" ]] && supabase_configured=true
+  fi
+
+  if [[ "$supabase_configured" == "false" ]]; then
+    echo -e "  ${YELLOW}Supabase not configured — transcripts are local-only.${NC}"
+  else
+    local sync_data
+    sync_data=$(sqlite3 -separator '|' "$db" "
+      SELECT
+        COUNT(*),
+        COUNT(*) FILTER (WHERE synced_at IS NOT NULL),
+        COUNT(*) FILTER (WHERE synced_at IS NULL AND sync_attempts < 5),
+        COUNT(*) FILTER (WHERE synced_at IS NULL AND sync_attempts >= 5),
+        MAX(synced_at)
+      FROM transcripts;
+    " 2>/dev/null || echo "0|0|0|0|")
+
+    local sh_total sh_synced sh_pending sh_failed sh_last_sync
+    IFS='|' read -r sh_total sh_synced sh_pending sh_failed sh_last_sync <<< "$sync_data"
+    sh_total="${sh_total:-0}"
+    sh_synced="${sh_synced:-0}"
+    sh_pending="${sh_pending:-0}"
+    sh_failed="${sh_failed:-0}"
+
+    local sync_pct="0.0"
+    if [[ "$sh_total" -gt 0 ]] 2>/dev/null; then
+      sync_pct=$(awk "BEGIN { printf \"%.1f\", ($sh_synced / $sh_total) * 100 }")
+    fi
+
+    printf "  %-24s %s\n" "Total transcripts:" "$(format_number "$sh_total")"
+    printf "  %-24s %s  (%s%%)\n" "Synced to cloud:" "$(format_number "$sh_synced")" "$sync_pct"
+    printf "  %-24s %s\n" "Pending sync:" "$(format_number "$sh_pending")"
+    if [[ "$sh_failed" -gt 0 ]] 2>/dev/null; then
+      printf "  ${YELLOW}%-24s %s${NC}\n" "Permanently failed:" "$(format_number "$sh_failed")"
+      echo -e "  ${YELLOW}Run: sqlite3 .pm/tasks.db \"SELECT session_id, sync_error FROM transcripts WHERE sync_attempts >= 5\"${NC}"
+    else
+      printf "  %-24s %s\n" "Permanently failed:" "0"
+    fi
+
+    if [[ -n "$sh_last_sync" ]]; then
+      # Calculate time since last sync
+      local now_epoch last_epoch diff_seconds
+      now_epoch=$(date +%s)
+      last_epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$sh_last_sync" +%s 2>/dev/null || date -d "$sh_last_sync" +%s 2>/dev/null || echo "0")
+      if [[ "$last_epoch" -gt 0 ]]; then
+        diff_seconds=$((now_epoch - last_epoch))
+        if [[ $diff_seconds -lt 60 ]]; then
+          printf "  %-24s %s\n" "Last sync:" "${diff_seconds} seconds ago"
+        elif [[ $diff_seconds -lt 3600 ]]; then
+          printf "  %-24s %s\n" "Last sync:" "$((diff_seconds / 60)) minutes ago"
+        elif [[ $diff_seconds -lt 86400 ]]; then
+          printf "  %-24s %s\n" "Last sync:" "$((diff_seconds / 3600)) hours ago"
+        else
+          printf "  %-24s %s\n" "Last sync:" "$((diff_seconds / 86400)) days ago"
+        fi
+      else
+        printf "  %-24s %s\n" "Last sync:" "$sh_last_sync"
+      fi
+    else
+      printf "  %-24s %s\n" "Last sync:" "never"
+    fi
   fi
 
   # === Section 4: Available Tasks ===

@@ -521,6 +521,161 @@ supabase_sync_all_transcripts() {
     fi
 }
 
+# --- Task pull (bidirectional sync) ---
+
+# Status rank for comparison: pending=0, red=1, green=2
+_status_rank() {
+    case "$1" in
+        pending) echo 0 ;;
+        red)     echo 1 ;;
+        green)   echo 2 ;;
+        *)       echo 0 ;;
+    esac
+}
+
+supabase_pull_tasks() {
+    # Pull task state from Supabase into local SQLite.
+    # Safe merge: only updates tasks you don't own locally, status only advances,
+    # definition fields (title, description, done_when, type, priority) are never pulled.
+    #
+    # Usage: supabase_pull_tasks <sprint> <db_path> <my_id>
+    #   sprint  — sprint name to pull
+    #   db_path — path to local tasks.db
+    #   my_id   — local agent/developer identity (tasks owned by this ID are protected)
+    #
+    # Returns: 0 on success, 1 on error/not configured
+    local sprint="$1"
+    local db_path="$2"
+    local my_id="$3"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    # GET state-only columns from Supabase
+    local response
+    response=$(_supabase_request "GET" \
+        "tasks?sprint=eq.${sprint}&select=sprint,task_num,status,owner,started_at,completed_at,merged_at" \
+        2>/dev/null) || {
+        echo "Supabase unreachable — skipping task pull" >&2
+        return 1
+    }
+
+    if [ -z "$response" ] || [ "$response" = "[]" ]; then
+        return 0
+    fi
+
+    local count
+    count=$(echo "$response" | jq 'length' 2>/dev/null)
+    if [ -z "$count" ] || [ "$count" -eq 0 ] 2>/dev/null; then
+        return 0
+    fi
+
+    local pulled=0
+    local skipped=0
+    local superseded=0
+
+    for i in $(seq 0 $((count - 1))); do
+        local sb_task_num sb_status sb_owner sb_started sb_completed sb_merged
+        sb_task_num=$(echo "$response" | jq -r ".[$i].task_num")
+        sb_status=$(echo "$response" | jq -r ".[$i].status // \"pending\"")
+        sb_owner=$(echo "$response" | jq -r ".[$i].owner // \"\"")
+        sb_started=$(echo "$response" | jq -r ".[$i].started_at // \"\"")
+        sb_completed=$(echo "$response" | jq -r ".[$i].completed_at // \"\"")
+        sb_merged=$(echo "$response" | jq -r ".[$i].merged_at // \"\"")
+
+        # Get local state for this task
+        local local_row
+        local_row=$(sqlite3 -separator '|' "$db_path" "
+            SELECT status, owner, merged_at
+            FROM tasks
+            WHERE sprint = '$sprint' AND task_num = $sb_task_num;
+        " 2>/dev/null)
+
+        if [ -z "$local_row" ]; then
+            # Task doesn't exist locally — skip (definitions come from git)
+            ((skipped++)) || true
+            continue
+        fi
+
+        local local_status local_owner local_merged
+        IFS='|' read -r local_status local_owner local_merged <<< "$local_row"
+
+        # merged_at is sticky: once set, never unset
+        if [ -n "$local_merged" ] && [ -z "$sb_merged" ]; then
+            sb_merged="$local_merged"
+        fi
+
+        # Check if this is MY task locally
+        if [ -n "$local_owner" ] && [ "$local_owner" = "$my_id" ]; then
+            # Supersession check: different owner on Supabase AND more advanced status
+            local sb_rank local_rank
+            sb_rank=$(_status_rank "$sb_status")
+            local_rank=$(_status_rank "$local_status")
+
+            if [ -n "$sb_owner" ] && [ "$sb_owner" != "$my_id" ] && [ "$sb_rank" -gt "$local_rank" ]; then
+                # Superseded: someone else completed the task
+                echo "Task ${sprint}#${sb_task_num} was completed by ${sb_owner} — your local claim has been reset" >&2
+                sqlite3 "$db_path" "
+                    UPDATE tasks
+                    SET status = 'pending', owner = NULL, session_id = NULL,
+                        started_at = NULL, synced_at = NULL
+                    WHERE sprint = '$sprint' AND task_num = $sb_task_num;
+                " 2>/dev/null
+                ((superseded++)) || true
+
+                # Flag worktree for cleanup
+                local wt_path
+                wt_path=$(git worktree list --porcelain 2>/dev/null | grep -A1 "worktree.*task/${sprint}-${sb_task_num}" | head -1 | sed 's/^worktree //')
+                if [ -n "$wt_path" ] && [ -d "$wt_path" ]; then
+                    local has_changes
+                    has_changes=$(git -C "$wt_path" status --porcelain 2>/dev/null)
+                    if [ -z "$has_changes" ]; then
+                        git worktree remove "$wt_path" 2>/dev/null || true
+                    else
+                        echo "WARNING: Worktree at $wt_path has uncommitted changes — not removing" >&2
+                    fi
+                fi
+            else
+                # My task, not superseded — keep local state
+                ((skipped++)) || true
+            fi
+            continue
+        fi
+
+        # Not my task — check if status advances
+        local sb_rank local_rank
+        sb_rank=$(_status_rank "$sb_status")
+        local_rank=$(_status_rank "$local_status")
+
+        if [ "$sb_rank" -le "$local_rank" ]; then
+            # Supabase status is same or less advanced — skip
+            ((skipped++)) || true
+            continue
+        fi
+
+        # Update local state columns (never touch definition fields)
+        local set_clauses="status = '$sb_status'"
+        [ -n "$sb_owner" ] && set_clauses="${set_clauses}, owner = '$sb_owner'"
+        [ -n "$sb_started" ] && set_clauses="${set_clauses}, started_at = '$sb_started'"
+        [ -n "$sb_completed" ] && set_clauses="${set_clauses}, completed_at = '$sb_completed'"
+        [ -n "$sb_merged" ] && set_clauses="${set_clauses}, merged_at = '$sb_merged'"
+
+        sqlite3 "$db_path" "
+            UPDATE tasks
+            SET $set_clauses
+            WHERE sprint = '$sprint' AND task_num = $sb_task_num;
+        " 2>/dev/null
+        ((pulled++)) || true
+    done
+
+    if [ "$pulled" -gt 0 ] || [ "$superseded" -gt 0 ]; then
+        echo "Pulled: $pulled updated, $skipped skipped, $superseded superseded" >&2
+    fi
+
+    return 0
+}
+
 # --- Connectivity check ---
 
 supabase_ping() {

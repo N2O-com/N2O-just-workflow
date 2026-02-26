@@ -153,6 +153,15 @@ if [[ -f "$SUPABASE_CLIENT" ]]; then
 fi
 
 if [[ -f ".pm/tasks.db" && -x "$CLAIM_SCRIPT" ]]; then
+  # Pull fresh task state from Supabase in background (non-blocking)
+  if $_supabase_available; then
+    _pull_dev_id="${developer_name:-$(hostname -s 2>/dev/null || echo "unknown")}"
+    _pull_sprints=$(sqlite3 .pm/tasks.db "SELECT DISTINCT sprint FROM tasks WHERE status IN ('pending','red');" 2>/dev/null || echo "")
+    for _ps in $_pull_sprints; do
+      supabase_pull_tasks "$_ps" ".pm/tasks.db" "$_pull_dev_id" 2>/dev/null || true
+    done &
+  fi
+
   # Check if there are any available tasks before attempting claim
   available_count=$(sqlite3 .pm/tasks.db "SELECT COUNT(*) FROM available_tasks;" 2>/dev/null || echo "0")
 

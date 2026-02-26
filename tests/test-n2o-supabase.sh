@@ -713,6 +713,151 @@ test_sync_batch_fallback_to_individual() {
   fi
 }
 
+# -----------------------------------------------------------------------------
+# Task pull tests
+# -----------------------------------------------------------------------------
+
+# Helper: set mock curl to return specific task state JSON
+set_mock_task_response() {
+  local response_file="$TEST_DIR/mock_response.json"
+  echo "$1" > "$response_file"
+  export MOCK_RESPONSE_FILE="$response_file"
+}
+
+test_pull_updates_unowned_tasks() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Task 2 is pending locally, no owner
+  # Supabase says someone else claimed it
+  set_mock_task_response '[{"sprint":"test-sprint","task_num":2,"status":"red","owner":"other-agent","started_at":"2026-02-25T10:00:00Z","completed_at":null,"merged_at":null}]'
+
+  supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>/dev/null || true
+
+  local status owner
+  status=$(sqlite3 "$db" "SELECT status FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+  owner=$(sqlite3 "$db" "SELECT owner FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+  assert_equals "red" "$status" "Unowned task should be updated to red"
+  assert_equals "other-agent" "$owner" "Unowned task should get other agent's owner"
+}
+
+test_pull_skips_own_tasks() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Task 1 is owned by agent-1 locally (status=red)
+  # Supabase also shows it as red/agent-1 — should skip
+  set_mock_task_response '[{"sprint":"test-sprint","task_num":1,"status":"red","owner":"agent-1","started_at":"2026-02-25T10:00:00Z","completed_at":null,"merged_at":null}]'
+
+  supabase_pull_tasks "test-sprint" "$db" "agent-1" 2>/dev/null || true
+
+  local status
+  status=$(sqlite3 "$db" "SELECT status FROM tasks WHERE sprint='test-sprint' AND task_num=1;")
+  assert_equals "red" "$status" "Own task should remain unchanged"
+}
+
+test_pull_status_never_regresses() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Task 3 is green locally (completed)
+  # Supabase shows it as red — should NOT regress
+  set_mock_task_response '[{"sprint":"test-sprint","task_num":3,"status":"red","owner":"agent-2","started_at":"2026-02-25T10:00:00Z","completed_at":null,"merged_at":null}]'
+
+  supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>/dev/null || true
+
+  local status
+  status=$(sqlite3 "$db" "SELECT status FROM tasks WHERE sprint='test-sprint' AND task_num=3;")
+  assert_equals "green" "$status" "Status should never regress from green to red"
+}
+
+test_pull_definitions_untouched() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Get original title
+  local orig_title
+  orig_title=$(sqlite3 "$db" "SELECT title FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+
+  # Pull with status update — title is NOT in the select (no title field from Supabase)
+  set_mock_task_response '[{"sprint":"test-sprint","task_num":2,"status":"red","owner":"other-agent","started_at":"2026-02-25T10:00:00Z","completed_at":null,"merged_at":null}]'
+
+  supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>/dev/null || true
+
+  local new_title
+  new_title=$(sqlite3 "$db" "SELECT title FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+  assert_equals "$orig_title" "$new_title" "Title (definition field) should be untouched after pull"
+}
+
+test_pull_handles_supabase_down() {
+  # Simulate Supabase being unreachable
+  export MOCK_HTTP_CODE="500"
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  local result=0
+  supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>/dev/null || result=$?
+
+  # Should return non-zero but not crash
+  assert_equals "1" "$result" "Should return 1 when Supabase is unreachable"
+
+  # Local state should be unchanged
+  local status
+  status=$(sqlite3 "$db" "SELECT status FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+  assert_equals "pending" "$status" "Local state should be unchanged when Supabase is down"
+}
+
+test_pull_supersession_resets_local() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Task 2: set up as locally claimed by my-agent (red)
+  sqlite3 "$db" "UPDATE tasks SET status='red', owner='my-agent' WHERE sprint='test-sprint' AND task_num=2;"
+
+  # Supabase says a DIFFERENT agent completed it (green)
+  set_mock_task_response '[{"sprint":"test-sprint","task_num":2,"status":"green","owner":"other-agent","started_at":"2026-02-25T09:00:00Z","completed_at":"2026-02-25T10:00:00Z","merged_at":null}]'
+
+  local output
+  output=$(supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>&1) || true
+
+  local status owner
+  status=$(sqlite3 "$db" "SELECT status FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+  owner=$(sqlite3 "$db" "SELECT owner FROM tasks WHERE sprint='test-sprint' AND task_num=2;")
+
+  assert_equals "pending" "$status" "Superseded task should be reset to pending"
+  assert_equals "" "$owner" "Superseded task owner should be cleared"
+  assert_contains "$output" "completed by other-agent" "Should log supersession warning"
+}
+
+test_pull_merged_at_sticky() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Set merged_at locally
+  sqlite3 "$db" "UPDATE tasks SET merged_at='2026-02-25T12:00:00Z' WHERE sprint='test-sprint' AND task_num=3;"
+
+  # Supabase has no merged_at but more advanced status (same rank, won't update but testing stickiness)
+  set_mock_task_response '[{"sprint":"test-sprint","task_num":3,"status":"green","owner":"agent-2","started_at":"2026-02-25T10:00:00Z","completed_at":"2026-02-25T11:00:00Z","merged_at":null}]'
+
+  supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>/dev/null || true
+
+  local merged
+  merged=$(sqlite3 "$db" "SELECT merged_at FROM tasks WHERE sprint='test-sprint' AND task_num=3;")
+  assert_equals "2026-02-25T12:00:00Z" "$merged" "merged_at should be sticky (never unset)"
+}
+
+test_pull_empty_response() {
+  source_client
+  local db="$TEST_DIR/.pm/tasks.db"
+
+  # Empty array response
+  set_mock_task_response '[]'
+
+  local result=0
+  supabase_pull_tasks "test-sprint" "$db" "my-agent" 2>/dev/null || result=$?
+  assert_equals "0" "$result" "Empty response should return 0 (no tasks to pull)"
+}
+
 # =============================================================================
 # Run tests
 # =============================================================================
@@ -786,6 +931,17 @@ run_test "Supabase schema has developer summary view"   test_schema_has_develope
 run_test "Records sync failure with attempt count"      test_upsert_transcript_records_failure
 run_test "Skips permanently failed rows (>=5 attempts)" test_sync_skips_permanently_failed
 run_test "Batch failure falls back to individual sync"  test_sync_batch_fallback_to_individual
+
+echo ""
+echo -e "${BOLD}Task Pull${NC}"
+run_test "Pull updates unowned tasks from Supabase"     test_pull_updates_unowned_tasks
+run_test "Pull skips tasks owned by local agent"        test_pull_skips_own_tasks
+run_test "Pull status never regresses"                  test_pull_status_never_regresses
+run_test "Pull leaves definition fields untouched"      test_pull_definitions_untouched
+run_test "Pull handles Supabase down gracefully"        test_pull_handles_supabase_down
+run_test "Pull supersession resets local claim"         test_pull_supersession_resets_local
+run_test "Pull preserves sticky merged_at"              test_pull_merged_at_sticky
+run_test "Pull handles empty response"                  test_pull_empty_response
 
 echo ""
 echo -e "${BOLD}Error Handling${NC}"
