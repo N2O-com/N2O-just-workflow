@@ -189,7 +189,8 @@ for i in $(seq 0 $((COUNT - 1))); do
     sqlite3 "$DB_PATH" "
         UPDATE tasks
         SET owner = '$AGENT_ID',
-            status = 'red'
+            status = 'red',
+            started_at = datetime('now')
             $SESSION_SET
         WHERE sprint = '$SPRINT'
           AND task_num = $TASK_NUM
@@ -234,7 +235,7 @@ if [ -z "$WORKTREE_PATH" ]; then
     # Unclaim the task since we can't set up the workspace
     sqlite3 "$DB_PATH" "
         UPDATE tasks
-        SET owner = NULL, status = 'pending', session_id = NULL
+        SET owner = NULL, status = 'pending', session_id = NULL, started_at = NULL
         WHERE sprint = '$CLAIMED_SPRINT' AND task_num = $CLAIMED_TASK_NUM;
     "
     exit 1
@@ -248,7 +249,7 @@ _bg_handle_rejection() {
     # Unclaim locally
     sqlite3 "$DB_PATH" "
         UPDATE tasks
-        SET owner = NULL, status = 'pending', session_id = NULL
+        SET owner = NULL, status = 'pending', session_id = NULL, started_at = NULL
         WHERE sprint = '$sprint' AND task_num = $task_num;
     " 2>/dev/null || true
 
@@ -308,7 +309,7 @@ _bg_verify_claim() {
 
         sqlite3 "$DB_PATH" "
             UPDATE tasks
-            SET owner = '$AGENT_ID', status = 'red' $next_session_set
+            SET owner = '$AGENT_ID', status = 'red', started_at = datetime('now') $next_session_set
             WHERE sprint = '$next_sprint'
               AND task_num = $next_task_num
               AND owner IS NULL

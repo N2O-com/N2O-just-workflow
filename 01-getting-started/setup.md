@@ -7,7 +7,10 @@
 | **Claude Code** | [Install instructions](https://docs.anthropic.com/claude-code) |
 | **Claude Max subscription** | $200/month recommended for parallel work |
 | **Terminal with tabs** | iTerm2 (Mac), Windows Terminal (Windows) |
-| **SQLite** | Pre-installed on Mac/Linux. [Windows download](https://www.sqlite.org/download.html) |
+| **bash 3.2+** | Pre-installed on Mac/Linux |
+| **sqlite3** | Pre-installed on Mac/Linux. [Windows download](https://www.sqlite.org/download.html) |
+| **jq** | `brew install jq` (Mac) or `apt install jq` (Linux) |
+| **git** | Pre-installed on most systems |
 
 ### Install Claude Code
 
@@ -22,38 +25,27 @@ curl -fsSL https://claude.ai/install.sh | bash
 ```
 
 ## First-Time Setup
+
 ```bash
-# 1. Create required directories
-mkdir -p .pm/todo .wm
+# 1. Clone the N2O framework (one-time)
+git clone <framework-repo-url> ~/n2o
 
-# 2. Initialize the task database
-sqlite3 .pm/tasks.db < .pm/schema.sql
+# 2. Initialize your project
+~/n2o/n2o init <your-project-path> --interactive --register
 
-# 3. Open Claude Code
-claude
+# 3. Verify everything is set up
+~/n2o/n2o check <your-project-path>
 
-# 4. Start planning your first feature
+# 4. Open Claude Code in your project
+cd <your-project-path> && claude
+
+# 5. Start planning your first feature
 /pm-agent create a spec for [your feature]
 ```
 
-## Verify It's Working
+`n2o init` handles everything: creates `.pm/` directories, initializes `tasks.db` from the schema, installs skills and session hooks, scaffolds `CLAUDE.md`, and registers your developer name.
 
-Check that the database was created:
-```bash
-sqlite3 .pm/tasks.db "SELECT name FROM sqlite_master WHERE type='table';"
-```
-
-You should see:
-```
-tasks
-task_dependencies
-```
-
-Try invoking an agent:
-```bash
-claude
-> /pm-agent what specs exist?
-```
+`n2o check` verifies: all 6 skills installed, session hooks configured, rates.json present, database tables exist, and `.gitignore` is correct.
 
 ## What Goes Where
 
@@ -63,14 +55,12 @@ claude
 | Database schema | `.pm/schema.sql` | Yes |
 | Sprint specs | `.pm/todo/{sprint}/` | Yes |
 | Task seeds | `.pm/todo/{sprint}/tasks.sql` | Yes |
-| Working memory | `.wm/` | No |
-| Agent skills | `02-agents/` | Yes |
-| Patterns | `03-patterns/` | Yes |
+| Agent skills | `.claude/skills/` | Yes |
+| Config | `.pm/config.json` | Yes |
 | Secrets | `.env.local` | No |
 
 ## Cleanup / Reset
 
-If things get messy and you need to start fresh:
 ```bash
 # Reset the task database
 rm .pm/tasks.db
@@ -78,9 +68,6 @@ sqlite3 .pm/tasks.db < .pm/schema.sql
 
 # Reload a sprint's tasks
 sqlite3 .pm/tasks.db < .pm/todo/{sprint}/tasks.sql
-
-# Clear working memory
-rm -rf .wm/*
 ```
 
 ## Multiple Engineers
@@ -90,8 +77,7 @@ Each engineer:
 - Shares specs via `.pm/todo/{sprint}/` (in git)
 - Shares task seeds via `tasks.sql` (in git)
 
-To sync:
+To sync after pulling:
 ```bash
-git pull
-sqlite3 .pm/tasks.db < .pm/todo/{sprint}/tasks.sql
+n2o sync <your-project-path>
 ```

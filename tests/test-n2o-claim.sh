@@ -217,6 +217,14 @@ test_claim_updates_db() {
   assert_equals "sess-123" "$session_id" "DB session_id should be set"
 }
 
+test_claim_sets_started_at() {
+  (cd "$TEST_DIR" && bash "$CLAIM_SCRIPT" --agent-id "test-agent" 2>/dev/null) > /dev/null
+
+  local started_at
+  started_at=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT started_at FROM tasks WHERE sprint = 'test-sprint' AND task_num = 1;")
+  assert_not_equals "" "$started_at" "started_at should be set after claim"
+}
+
 test_claim_creates_worktree() {
   (cd "$TEST_DIR" && bash "$CLAIM_SCRIPT" --agent-id "test-agent" 2>/dev/null) > /dev/null
   assert_dir_exists "$TEST_DIR/.worktrees/test-sprint-1" "Worktree should be created"
@@ -364,6 +372,33 @@ test_hook_skips_non_n2o_project() {
   owner=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT owner FROM tasks WHERE sprint = 'test-sprint' AND task_num = 1;")
   if [[ -n "$owner" ]]; then
     echo "    ASSERT FAILED: Should not claim in non-N2O project" >&2
+    return 1
+  fi
+}
+
+test_hook_claim_tasks_false_skips_claim() {
+  # Set claim_tasks: false in config
+  local config_content
+  config_content=$(cat "$TEST_DIR/.pm/config.json")
+  echo "$config_content" | jq '. + {"claim_tasks": false}' > "$TEST_DIR/.pm/config.json"
+
+  local hook_output
+  hook_output=$(cd "$TEST_DIR" && echo '{"source":"startup","cwd":"'"$TEST_DIR"'"}' | bash "$SESSION_HOOK" 2>/dev/null)
+
+  # Should NOT contain "Claimed task" or "TASK AUTO-CLAIMED"
+  if echo "$hook_output" | grep -qi "TASK AUTO-CLAIMED"; then
+    echo "    ASSERT FAILED: Should not claim when claim_tasks is false" >&2
+    return 1
+  fi
+
+  # Should show sprint progress instead
+  assert_contains "$hook_output" "SPRINT PROGRESS" "Should show sprint progress summary"
+
+  # Task should remain unclaimed
+  local owner
+  owner=$(sqlite3 "$TEST_DIR/.pm/tasks.db" "SELECT owner FROM tasks WHERE sprint = 'test-sprint' AND task_num = 1;")
+  if [[ -n "$owner" ]]; then
+    echo "    ASSERT FAILED: Task should not be claimed (owner=$owner)" >&2
     return 1
   fi
 }
@@ -547,6 +582,7 @@ echo -e "${BOLD}claim-task.sh — Claiming${NC}"
 run_test "Claims successfully"                         test_claim_success
 run_test "Outputs valid JSON with all fields"           test_claim_outputs_valid_json
 run_test "Updates DB: owner, status, session_id"        test_claim_updates_db
+run_test "Claim sets started_at timestamp"              test_claim_sets_started_at
 run_test "Creates worktree for claimed task"            test_claim_creates_worktree
 run_test "Claims highest priority task first"           test_claim_respects_priority
 run_test "Sprint filter limits scope"                   test_claim_sprint_filter
@@ -563,6 +599,7 @@ run_test "Hook shows done_when criteria"                test_hook_shows_done_whe
 run_test "Hook handles no available tasks gracefully"   test_hook_no_tasks_no_crash
 run_test "Hook skips non-startup events"                test_hook_skips_non_startup
 run_test "Hook skips non-N2O projects"                  test_hook_skips_non_n2o_project
+run_test "Hook skips claim when claim_tasks=false"      test_hook_claim_tasks_false_skips_claim
 
 echo ""
 echo -e "${BOLD}Claim Freshness${NC}"

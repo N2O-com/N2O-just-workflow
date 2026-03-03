@@ -19,6 +19,7 @@
 
   "auto_invoke_skills": true,
   "disabled_skills": [],
+  "claim_tasks": true,
 
   "team": []
 }

@@ -42,9 +42,9 @@ setup() {
   touch "$TEST_DIR/scripts/collect-transcripts.sh"
 }
 
-# Run n2o from within TEST_DIR so N2O_DIR resolves to the test directory
+# Run n2o from within TEST_DIR so N2O_DIR and project path resolve to the test directory
 run_n2o() {
-  bash "$TEST_DIR/n2o" "$@"
+  (cd "$TEST_DIR" && bash "$TEST_DIR/n2o" "$@")
 }
 
 teardown() {
@@ -419,6 +419,30 @@ test_stats_compare_no_data_json() {
   assert_equals "0" "$precision_len" "Empty skill precision should be empty array"
 }
 
+test_stats_project_path_detection() {
+  # Create a "project" directory with its own .pm/tasks.db
+  local project_dir
+  project_dir=$(mktemp -d)
+  mkdir -p "$project_dir/.pm"
+  sqlite3 "$project_dir/.pm/tasks.db" < "$SCHEMA"
+  # Seed project DB with unique data
+  sqlite3 "$project_dir/.pm/tasks.db" "INSERT INTO tasks (sprint, task_num, title, status, type) VALUES ('project-sprint', 1, 'Project Task', 'green', 'infra');"
+  # Stub out collect-transcripts + manifest so n2o stats works
+  mkdir -p "$project_dir/scripts"
+  touch "$project_dir/scripts/collect-transcripts.sh"
+
+  # Run n2o stats --json from the project directory
+  local output
+  output=$(cd "$project_dir" && N2O_DIR="$N2O_DIR" bash "$N2O" stats --json 2>&1)
+
+  # Should show the project's sprint, not the framework's
+  local sprint
+  sprint=$(echo "$output" | jq -r '.sprint_progress[0].sprint // empty' 2>/dev/null)
+  assert_equals "project-sprint" "$sprint" "n2o stats should read project DB, not framework DB"
+
+  rm -rf "$project_dir"
+}
+
 test_stats_empty_db() {
   local db="$TEST_DIR/.pm/tasks.db"
 
@@ -567,6 +591,10 @@ run_test "Sprint progress with known data"         test_stats_query_sprint_progr
 run_test "Sprint velocity with known data"         test_stats_query_velocity
 run_test "Estimation accuracy with known data"     test_stats_query_estimation_accuracy
 run_test "Empty DB queries don't crash"            test_stats_empty_db
+
+echo ""
+echo -e "${BOLD}Path Resolution Tests${NC}"
+run_test "Stats uses project DB when in project dir" test_stats_project_path_detection
 
 echo ""
 echo -e "${BOLD}Results: $PASS passed, $FAIL failed, $TOTAL total${NC}"

@@ -37,6 +37,20 @@ log_warn()    { echo -e "${YELLOW}⚠${NC}  $1"; }
 log_error()   { echo -e "${RED}✗${NC}  $1" >&2; }
 log_header()  { echo -e "\n${BOLD}$1${NC}"; }
 
+# Resolve the project tasks.db by walking up from CWD.
+# Falls back to $N2O_DIR/.pm/tasks.db if no project DB found.
+resolve_project_db() {
+  local search_dir="$PWD"
+  while [[ "$search_dir" != "/" ]]; do
+    if [[ -f "$search_dir/.pm/tasks.db" ]]; then
+      echo "$search_dir/.pm/tasks.db"
+      return
+    fi
+    search_dir="$(dirname "$search_dir")"
+  done
+  echo "$N2O_DIR/.pm/tasks.db"
+}
+
 # Compare two semver strings. Returns via exit code:
 #   0 = $1 > $2 (first is greater)
 #   1 = $1 = $2 (equal)
@@ -620,7 +634,7 @@ run_health_check() {
   fi
 
   # 8. Skill directories and SKILL.md files
-  for skill in pm-agent tdd-agent bug-workflow; do
+  for skill in pm-agent tdd-agent bug-workflow detect-project react-best-practices web-design-guidelines; do
     if [[ -d "$project_path/.claude/skills/$skill" ]]; then
       if [[ -f "$project_path/.claude/skills/$skill/SKILL.md" ]]; then
         check_pass "Skill: $skill"
@@ -659,6 +673,41 @@ run_health_check() {
   else
     check_fail ".gitignore missing"
   fi
+
+  # 11. Session hooks in settings.json
+  local settings_file="$project_path/.claude/settings.json"
+  if [[ -f "$settings_file" ]]; then
+    if jq -e '.hooks.SessionStart' "$settings_file" &>/dev/null; then
+      check_pass "SessionStart hook configured"
+    else
+      check_fail "SessionStart hook missing in settings.json"
+    fi
+    if jq -e '.hooks.SessionEnd' "$settings_file" &>/dev/null; then
+      check_pass "SessionEnd hook configured"
+    else
+      check_fail "SessionEnd hook missing in settings.json"
+    fi
+  else
+    check_fail ".claude/settings.json missing (no session hooks)"
+  fi
+
+  # 12. rates.json exists
+  if [[ -f "$project_path/.pm/rates.json" ]] || [[ -f "$project_path/templates/rates.json" ]]; then
+    check_pass "rates.json exists"
+  else
+    check_fail "rates.json missing (not in .pm/ or templates/)"
+  fi
+
+  # 13. Workflow tables (transcripts + workflow_events)
+  for table in transcripts workflow_events; do
+    local result
+    result=$(sqlite3 "$project_path/.pm/tasks.db" "SELECT name FROM sqlite_master WHERE type='table' AND name='$table';" 2>/dev/null)
+    if [[ "$result" == "$table" ]]; then
+      check_pass "Table: $table"
+    else
+      check_fail "Missing table: $table"
+    fi
+  done
 
   # Summary
   echo ""
@@ -1023,7 +1072,24 @@ cmd_init() {
     fill_template "$project_path/CLAUDE.md" "$project_name" "$test_cmd" "$typecheck_cmd" "$lint_cmd" "$build_cmd"
     log_success "Created CLAUDE.md (Claude will auto-detect project structure on first run)"
   else
-    log_info "Exists: CLAUDE.md (skipped)"
+    log_warn "Existing CLAUDE.md found. N2O needs its own CLAUDE.md for skill references and auto-invocation."
+    echo ""
+    echo "  [r] Replace — back up existing to CLAUDE.md.bak, install N2O template"
+    echo "  [s] Skip    — keep your existing CLAUDE.md (you'll need to merge N2O sections manually)"
+    echo ""
+    local claude_choice=""
+    read -rp "  Your choice [r/s]: " claude_choice
+    case "$claude_choice" in
+      r|R|replace)
+        cp "$project_path/CLAUDE.md" "$project_path/CLAUDE.md.bak"
+        cp "$N2O_DIR/templates/CLAUDE.md" "$project_path/CLAUDE.md"
+        fill_template "$project_path/CLAUDE.md" "$project_name" "$test_cmd" "$typecheck_cmd" "$lint_cmd" "$build_cmd"
+        log_success "Replaced CLAUDE.md (backup saved to CLAUDE.md.bak)"
+        ;;
+      *)
+        log_info "Kept existing CLAUDE.md (skipped)"
+        ;;
+    esac
   fi
 
   # schema-extensions.sql
@@ -1060,7 +1126,7 @@ cmd_init() {
   # ---- Step 6: Update .gitignore ----
   log_header "6. Updating .gitignore"
   local gitignore="$project_path/.gitignore"
-  local entries=(".pm/tasks.db" ".wm/" ".env.local" ".n2o-backup/" ".pm/.last_seen_version" ".pm/.skill-checksums.json")
+  local entries=(".pm/tasks.db" ".wm/" ".env.local" ".n2o-backup/" ".pm/.last_seen_version" ".pm/.skill-checksums.json" ".worktrees/")
 
   if [[ ! -f "$gitignore" ]]; then
     touch "$gitignore"
@@ -1661,7 +1727,8 @@ format_number() {
 cmd_stats_compare() {
   local skill_name="$1"
   local json_output="$2"
-  local db="$N2O_DIR/.pm/tasks.db"
+  local db
+  db="$(resolve_project_db)"
 
   # ---- JSON output mode ----
   if [[ "$json_output" == "true" ]]; then
@@ -1804,7 +1871,8 @@ cmd_stats() {
     esac
   done
 
-  local db="$N2O_DIR/.pm/tasks.db"
+  local db
+  db="$(resolve_project_db)"
 
   # Check for database
   if [[ ! -f "$db" ]]; then

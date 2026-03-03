@@ -6,7 +6,15 @@
 macOS or Linux with `git`, `jq`, `sqlite3`, and [Claude Code](https://claude.com/claude-code) (`claude` CLI).
 Run `n2o check <project-path>` to verify.
 
-## Setup
+## First-Time Setup
+
+If this is your first time using N2O on any machine, run `n2o setup` first. This configures auto-sync so the framework stays up to date automatically on every Claude Code session start.
+
+```bash
+/path/to/n2o setup
+```
+
+## Project Setup
 
 ```bash
 /path/to/n2o init <your-project-path> --interactive --register

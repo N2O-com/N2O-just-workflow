@@ -28,30 +28,26 @@ fi
 
 output=""
 
-# --- Step 0.5: Auto-sync framework (before version notification) ---
+# --- Step 0.5: Auto-sync framework (background — non-blocking) ---
 global_config="$HOME/.n2o/config.json"
 if [[ -f "$global_config" ]]; then
   auto_sync=$(jq -r '.auto_sync // false' "$global_config" 2>/dev/null)
   framework_path=$(jq -r '.framework_path // ""' "$global_config" 2>/dev/null)
 
   if [[ "$auto_sync" == "true" && -n "$framework_path" && -d "$framework_path" ]]; then
-    # Skip if project is version-pinned
     pinned=$(jq -r '.n2o_version_pinned // ""' .pm/config.json 2>/dev/null)
     project_ver=$(jq -r '.n2o_version // ""' .pm/config.json 2>/dev/null)
     framework_ver=$(jq -r '.version // ""' "$framework_path/n2o-manifest.json" 2>/dev/null)
 
     if [[ -z "$pinned" && -n "$framework_ver" && "$project_ver" != "$framework_ver" ]]; then
-      # Optional auto-pull
-      auto_pull=$(jq -r '.auto_pull // false' "$global_config" 2>/dev/null)
-      if [[ "$auto_pull" == "true" ]]; then
-        git -C "$framework_path" pull --ff-only 2>/dev/null || true
-      fi
-
-      # Run quiet sync
-      sync_output=$("$framework_path/n2o" sync "$cwd" --quiet 2>/dev/null) || true
-      if [[ -n "$sync_output" ]]; then
-        output="${output}${sync_output}\n"
-      fi
+      # Run sync + optional pull in background to avoid eating the 5s hook timeout
+      (
+        auto_pull=$(jq -r '.auto_pull // false' "$global_config" 2>/dev/null)
+        if [[ "$auto_pull" == "true" ]]; then
+          git -C "$framework_path" pull --ff-only 2>/dev/null || true
+        fi
+        "$framework_path/n2o" sync "$cwd" --quiet 2>/dev/null || true
+      ) &
     fi
   fi
 fi
@@ -79,9 +75,9 @@ fi
 
 output="${output}Developer: ${developer_name} | Concurrent sessions: ${concurrent_sessions}\n"
 
-# --- Step 1: Git pull reminder (local-only, no network call) ---
+# --- Step 1: Git pull reminder (background — non-blocking) ---
+# Check is local-only (no network), but still runs in background to keep critical path fast
 if command -v git &>/dev/null && git rev-parse --git-dir &>/dev/null 2>&1; then
-  # Detect default remote branch
   default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
   if [[ -z "$default_branch" ]]; then
     default_branch="main"
@@ -137,11 +133,15 @@ fi
 # If tasks.db exists and has available tasks, claim one and set up a worktree.
 # The claim-task.sh script handles atomic claiming and worktree creation.
 # Its JSON output is parsed here to produce context for Claude.
+# Set claim_tasks: false in .pm/config.json to skip auto-claim.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAIM_SCRIPT="$SCRIPT_DIR/coordination/claim-task.sh"
 SUPABASE_CLIENT="$SCRIPT_DIR/coordination/supabase-client.sh"
 SYNC_SCRIPT="$SCRIPT_DIR/coordination/sync-task-state.sh"
+
+# Check claim_tasks config (default: true)
+claim_tasks=$(jq -r 'if .claim_tasks == false then "false" else "true" end' .pm/config.json 2>/dev/null)
 
 # Source Supabase client if available (for agent registration)
 _supabase_available=false
@@ -165,14 +165,25 @@ if [[ -f ".pm/tasks.db" && -x "$CLAIM_SCRIPT" ]]; then
   # Check if there are any available tasks before attempting claim
   available_count=$(sqlite3 .pm/tasks.db "SELECT COUNT(*) FROM available_tasks;" 2>/dev/null || echo "0")
 
-  if [[ "$available_count" -gt 0 ]]; then
+  if [[ "$claim_tasks" == "false" ]]; then
+    # Show sprint progress summary instead of claiming
+    if [[ "$available_count" -gt 0 ]]; then
+      sprint_summary=$(sqlite3 -separator ' | ' .pm/tasks.db "SELECT sprint, total_tasks, green, pending, percent_complete||'%' FROM sprint_progress;" 2>/dev/null || echo "")
+      if [[ -n "$sprint_summary" ]]; then
+        output="${output}\n--- SPRINT PROGRESS (claim_tasks: false) ---\n"
+        output="${output}Sprint | Total | Done | Pending | Complete\n"
+        output="${output}${sprint_summary}\n"
+        output="${output}Available tasks: ${available_count}\n"
+        output="${output}--- END PROGRESS ---\n"
+      fi
+    fi
+  elif [[ "$available_count" -gt 0 ]]; then
     # Attempt to claim — claim-task.sh outputs JSON on stdout, logs to stderr
     claim_err=$(mktemp)
     claim_json=$(bash "$CLAIM_SCRIPT" --session-id "${SESSION_ID:-unknown}" 2>"$claim_err") || true
 
     # Surface any claim errors to the user
     if [[ -s "$claim_err" ]]; then
-      local err_text
       err_text=$(cat "$claim_err")
       # Only surface actual errors (not info/success messages)
       if echo "$err_text" | grep -qi "error\|failed\|rejected"; then
