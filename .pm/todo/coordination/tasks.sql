@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Coordination Sprint Tasks
--- Source spec: specs/coordination.md
+-- Source spec: specs/active/coordination.md
 -- 4 phases, 13 tasks total
 -- =============================================================================
 
@@ -32,7 +32,7 @@ cleanup-worktree.sh:
 
 Edge cases: handle worktree already exists (re-claim after crash), handle branch already exists, handle cleanup when worktree has uncommitted changes (warn, don''t delete).
 
-Reference: specs/coordination.md Goal C (Isolation), Q3 (git worktrees).');
+Reference: specs/active/coordination.md Goal C (Isolation), Q3 (git worktrees).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 2,
@@ -53,7 +53,7 @@ On SessionStart:
 
 Initial routing: simple priority ordering from available_tasks. Intelligent routing (Digital Twin) comes in Phase 3.
 
-Reference: specs/coordination.md Goal G (Developer Experience), Q7 (Agent initiation).');
+Reference: specs/active/coordination.md Goal G (Developer Experience), Q7 (Agent initiation).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 3,
@@ -77,7 +77,7 @@ Dependency-aware gating:
 The merge queue runs as a loop with a configurable interval (default: check every 5 seconds).
 Does NOT include AI conflict resolution yet — that comes in Phase 4.
 
-Reference: specs/coordination.md Goal D (Conflict Resolution), Q5 (Merge strategy).');
+Reference: specs/active/coordination.md Goal D (Conflict Resolution), Q5 (Merge strategy).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 4,
@@ -96,7 +96,7 @@ Behavior:
 
 This is a prevention-first tool: if files are small enough, parallel agents rarely touch the same file and conflicts become rare.
 
-Reference: specs/coordination.md Goal C2 (File Structure for Parallelism).');
+Reference: specs/active/coordination.md Goal C2 (File Structure for Parallelism).');
 
 -- =============================================================================
 -- PHASE 2: Supabase Integration (cross-machine coordination)
@@ -126,7 +126,7 @@ Client:
 - Connection URL in .pm/config.json: supabase_url, supabase_key_env
 - Real-time: subscribe to task claim events so agents on this machine know immediately when tasks are claimed on other machines
 
-Reference: specs/coordination.md Q2 (coordination state), Q4 (two-layer architecture).');
+Reference: specs/active/coordination.md Q2 (coordination state), Q4 (two-layer architecture).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 6,
@@ -134,10 +134,10 @@ INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours,
  'infra', 'infra, database',
  3.0, 'medium', 'Async verification pattern is straightforward but handling rejection (stop current task, claim next) needs careful design',
  'Claiming flow works end-to-end: agent claims locally (instant), starts working, Supabase verifies in background. If Supabase rejects (another machine claimed first), agent abandons and claims next task. Manual test: simulate two machines claiming same task, verify one gets rejected and falls back.',
- 'Implement the optimistic claiming pattern from specs/coordination.md Q4.
+ 'Implement the optimistic claiming pattern from specs/active/coordination.md Q4.
 
 Flow:
-1. Agent claims locally via SQLite (existing atomic UPDATE pattern from changes/005)
+1. Agent claims locally via SQLite (existing atomic UPDATE pattern from specs/done/005-task-claiming.md)
 2. Agent immediately starts working (creates worktree, begins tdd-agent)
 3. In background, broadcast claim to Supabase: call supabase_claim_verify(task_sprint, task_num, agent_id)
 4. Supabase runs: UPDATE tasks SET owner = $agent WHERE sprint = $sprint AND task_num = $task_num AND owner IS NULL
@@ -149,7 +149,7 @@ The rejection handler needs to:
 - Cleanup the worktree for the rejected task
 - Re-run the claiming flow for the next available task
 
-Reference: specs/coordination.md Goal B (Task Coordination), Q4 (cross-machine claiming).');
+Reference: specs/active/coordination.md Goal B (Task Coordination), Q4 (cross-machine claiming).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 7,
@@ -175,7 +175,7 @@ Git hook triggers (installed by n2o init):
 All sync calls are background (append & to the command) and non-blocking.
 Add manual: n2o sync --force to push all local state to Supabase.
 
-Reference: specs/coordination.md Goal E (Sync & Visibility), Q6 (sync triggers).');
+Reference: specs/active/coordination.md Goal E (Sync & Visibility), Q6 (sync triggers).');
 
 -- =============================================================================
 -- PHASE 3: Intelligent Routing (Developer Digital Twin)
@@ -208,7 +208,7 @@ Population:
 
 Static data: developers table already has skill ratings. Add columns: expected_hours_per_day, typical_start_time, typical_end_time.
 
-Reference: specs/coordination.md Goal H (Developer Digital Twin).');
+Reference: specs/active/coordination.md Goal H (Developer Digital Twin).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 9,
@@ -244,7 +244,7 @@ Implementation:
 
 Graceful degradation: if Supabase is unreachable, skip overlap_avoidance and cross-machine trajectory data. Route on local-only signals (own loaded context, skill match, priority ordering). Agent keeps working.
 
-Reference: specs/coordination.md Goal H (Routing requirements), Q8 (Routing implementation).');
+Reference: specs/active/coordination.md Goal H (Routing requirements), Q8 (Routing implementation).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 10,
@@ -268,7 +268,7 @@ Integration with routing (task 9):
 - overlap_avoidance weight uses this overlap_score as negative signal
 - High overlap with another developer''s active working set = lower task score
 
-Reference: specs/coordination.md Goal C2 (File Structure), Goal H (Working set overlap avoidance).');
+Reference: specs/active/coordination.md Goal C2 (File Structure), Goal H (Working set overlap avoidance).');
 
 -- =============================================================================
 -- PHASE 4: AI Merge Resolution + Monitoring
@@ -298,7 +298,7 @@ When git merge detects a conflict:
 
 Target: >95% of merges clean or AI-resolved. <5% escalated to human.
 
-Reference: specs/coordination.md Goal D (Conflict Resolution), Q5 (Merge strategy).');
+Reference: specs/active/coordination.md Goal D (Conflict Resolution), Q5 (Merge strategy).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 12,
@@ -326,7 +326,7 @@ Resolution flow:
 - Runs: scripts/coordination/resolve-conflict.sh {sprint} {task_num}
 - Script: completes the merge, removes conflict report, unblocks task, logs resolution
 
-Reference: specs/coordination.md Goal D (Conflict Resolution).');
+Reference: specs/active/coordination.md Goal D (Conflict Resolution).');
 
 INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours, complexity, complexity_notes, done_when, description) VALUES
 ('coordination', 'coordination.md', 13,
@@ -334,7 +334,7 @@ INSERT INTO tasks (sprint, spec, task_num, title, type, skills, estimated_hours,
  'infra', 'infra, database',
  3.0, 'medium', 'Mostly new views on existing tables + the new coordination tables',
  'Dashboard views exist for coordination health: merge queue times, duplicate claim rate, AI merge resolution rate, human escalation rate, revert rate per concurrent agent count, coordination overhead (% of total agent time spent on coordination). n2o stats enhanced to show coordination metrics. Manual test: run 5 agents through a sprint, verify stats show accurate coordination metrics.',
- 'Add observability for the coordination system itself — are we meeting the success criteria from specs/coordination.md?
+ 'Add observability for the coordination system itself — are we meeting the success criteria from specs/active/coordination.md?
 
 New views (SQLite + Supabase):
 - coordination_health: merge queue avg time, max time, backlog count
@@ -352,7 +352,7 @@ Enhance n2o stats to include a "Coordination" section:
 
 Alert thresholds: warn if merge queue time >30s, if revert rate >15%, if duplicate claims >5%.
 
-Reference: specs/coordination.md Goal H2 (Efficiency), Success Criteria table.');
+Reference: specs/active/coordination.md Goal H2 (Efficiency), Success Criteria table.');
 
 -- =============================================================================
 -- DEPENDENCIES

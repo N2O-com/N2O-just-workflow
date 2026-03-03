@@ -20,7 +20,7 @@
 - Deprecating `launch-agents.sh` and all Warp-specific code
 - Contribution to FRAMEWORK.md: Agent Teams as implementation of Multithreading (1.1.2.2b)
 
-**Relationship to parallel orchestrator**: Agent Teams are one execution pattern within the broader parallel orchestrator (`specs/parallel-playbook.md`). The orchestrator is the decision layer *above* Agent Teams — it reads the full task graph and determines WHEN to use Agent Teams (same-spec parallelism, Pattern 2) vs solo agents (chains) vs racing (ambiguous approaches). In the orchestrator's multi-tier model, each Agent Team is a Tier 1 execution unit managed by the Tier 0 orchestrator.
+**Relationship to parallel orchestrator**: Agent Teams are one execution pattern within the broader parallel orchestrator (`parallel-playbook.md`). The orchestrator is the decision layer *above* Agent Teams — it reads the full task graph and determines WHEN to use Agent Teams (same-spec parallelism, Pattern 2) vs solo agents (chains) vs racing (ambiguous approaches). In the orchestrator's multi-tier model, each Agent Team is a Tier 1 execution unit managed by the Tier 0 orchestrator.
 
 **Out of scope**:
 - Supabase cross-machine coordination (unchanged, works as-is)
@@ -220,7 +220,7 @@ Generates and copies a team prompt to clipboard. User pastes into Claude.
 
 - Remove `launch-agents.sh`
 - Remove Warp launch config generation (`~/.warp/launch_configurations/`)
-- Update references in `specs/coordination.md` and any other docs
+- Update references in `coordination.md` and any other docs
 
 ### 8. FRAMEWORK.md contribution
 

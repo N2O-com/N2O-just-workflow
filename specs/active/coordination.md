@@ -205,7 +205,7 @@ Zero friction. The system handles coordination so developers don't have to think
 
 Inspired by VICA's Student Model (a probabilistic model of what a student knows, how well, and what state they're in), the coordination system maintains a **Developer Digital Twin** — a model of each engineer's current context, capabilities, and state. This is what the routing algorithm reads from.
 
-**Relationship to parallel orchestrator**: The orchestrator (`specs/parallel-playbook.md`) implements session-level intelligent routing — it reads the task graph and decides which tasks to run where (Agent Teams, solo pipelines, competitive races). Goal H's Developer Digital Twin feeds into this: the twin's loaded context and trajectory signals inform the orchestrator's pattern assignment. The orchestrator is the execution engine; the twin is the developer model it reasons about. See also `specs/developer-twin.md` for the full twin design.
+**Relationship to parallel orchestrator**: The orchestrator (`parallel-playbook.md`) implements session-level intelligent routing — it reads the task graph and decides which tasks to run where (Agent Teams, solo pipelines, competitive races). Goal H's Developer Digital Twin feeds into this: the twin's loaded context and trajectory signals inform the orchestrator's pattern assignment. The orchestrator is the execution engine; the twin is the developer model it reasons about. See also `developer-twin.md` for the full twin design.
 
 #### What the Digital Twin Tracks
 
@@ -530,8 +530,8 @@ What's already built that we can build on:
 - `N2O-SOPs/documents/VICA/functional-spec.md` — Student Model / Digital Twin concept: probabilistic model of learner state. Directly inspires the Developer Digital Twin for context-aware routing.
 
 **Existing design docs:**
-- `changes/005-task-claiming.md` — atomic claiming design
-- `changes/007-developer-tracking.md` — developer profiles, performance metrics
-- `changes/008-online-task-database.md` — hybrid architecture, why not MCP in hot path
-- `specs/workflow-dashboard.md` — adapter interface design, dashboard views
-- `specs/n2o-roadmap.md` — Goal 4 (Team Collaboration) and Goal 5 (Parallelization)
+- `../done/005-task-claiming.md` — atomic claiming design
+- `../done/007-developer-tracking.md` — developer profiles, performance metrics
+- `../done/008-online-task-database.md` — hybrid architecture, why not MCP in hot path
+- `workflow-dashboard.md` — adapter interface design, dashboard views
+- `n2o-roadmap.md` — Goal 4 (Team Collaboration) and Goal 5 (Parallelization)

@@ -7,7 +7,7 @@
 | Status | Draft |
 | Owner | Wiley |
 | Last Updated | 2026-02-23 |
-| Depends On | `specs/data-platform.md` (Layer 1 Ontology) |
+| Depends On | `data-platform.md` (Layer 1 Ontology) |
 | Enables | Intelligent task assignment, risk detection, capacity planning, forecasting |
 
 ---
@@ -25,7 +25,7 @@
 
 Layer 1 (Ontology) stores facts and relationships. But facts alone don't make decisions. The question "who should take this task?" requires combining multiple signals — skill match, current context, historical accuracy, availability, sprint familiarity — into a single recommendation with a confidence score and an explanation.
 
-This is the same pattern as ontological reasoning in other domains (the DLA scrap metal example from `specs/data-platform.md`): visual evidence says 50/50 between two possibilities, but contextual priors from the knowledge graph shift confidence to 95/5. Single signals are ambiguous; combined signals are decisive.
+This is the same pattern as ontological reasoning in other domains (the DLA scrap metal example from `data-platform.md`): visual evidence says 50/50 between two possibilities, but contextual priors from the knowledge graph shift confidence to 95/5. Single signals are ambiguous; combined signals are decisive.
 
 The rules engine is the reasoning layer that sits between "here are the facts" (Layer 1) and "here's what the human asked" (Layer 3).
 
@@ -528,6 +528,6 @@ No manual UX needed for the core loop. The system observes what happened. The on
 
 ## References
 
-- `specs/data-platform.md` — Layer 1 Ontology, Layer 3 Intelligence, schema definitions
+- `data-platform.md` — Layer 1 Ontology, Layer 3 Intelligence, schema definitions
 - Karpathy, "Software 2.0" (2017) — framing for learned vs hand-coded systems
-- DLA scrap metal identification — analogy for multi-signal ontological reasoning (see `specs/data-platform.md`, Layer 2 section)
+- DLA scrap metal identification — analogy for multi-signal ontological reasoning (see `data-platform.md`, Layer 2 section)

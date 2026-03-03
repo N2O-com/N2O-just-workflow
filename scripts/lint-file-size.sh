@@ -18,7 +18,7 @@ set -euo pipefail
 #   0 — No files exceed threshold
 #   1 — One or more files exceed threshold
 #
-# Reference: specs/coordination.md Goal C2 (File Structure for Parallelism)
+# Reference: specs/active/coordination.md Goal C2 (File Structure for Parallelism)
 # Compatible with bash 3.2+ (macOS default)
 # =============================================================================
 

@@ -147,5 +147,5 @@ CREATE TABLE IF NOT EXISTS _migrations (
 - Current schema: `.pm/schema.sql`
 - Current sync logic: `n2o` (lines 464-571)
 - Existing test harness: `tests/test-n2o-init.sh`
-- Roadmap context: `specs/n2o-roadmap.md` (Goal 1: Seamless Updates)
+- Roadmap context: `specs/active/n2o-roadmap.md` (Goal 1: Seamless Updates)
 - SQLite ALTER TABLE docs: full support in 3.35+ (we're on 3.51.0)

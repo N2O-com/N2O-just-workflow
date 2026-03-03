@@ -25,7 +25,7 @@
 #   4. Disjoint additions: both sides added different content → keep both
 #   5. Escalate: hunk cannot be auto-resolved
 #
-# Reference: specs/coordination.md Goal D (Conflict Resolution)
+# Reference: specs/active/coordination.md Goal D (Conflict Resolution)
 
 set -e
 

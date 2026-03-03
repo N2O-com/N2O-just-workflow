@@ -2,7 +2,7 @@
 
 **Status**: Draft
 **Depends on**: Observability (Goal 7), Skill Quality (Goal 6)
-**Related**: `specs/workflow-dashboard.md` (visualization), `specs/observability.md` (data collection)
+**Related**: `workflow-dashboard.md` (visualization), `../done/observability.md` (data collection)
 
 ---
 

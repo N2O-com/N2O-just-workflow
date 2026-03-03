@@ -17,8 +17,8 @@ Make N2O skills fire automatically based on user intent, without requiring manua
 
 **Out of scope**:
 - Building a custom routing engine or middleware
-- Skill versioning or A/B testing → `specs/n2o-roadmap.md` Goal 6
-- Observability/logging of skill invocations → `specs/n2o-roadmap.md` Goal 7
+- Skill versioning or A/B testing → `specs/active/n2o-roadmap.md` Goal 6
+- Observability/logging of skill invocations → `specs/active/n2o-roadmap.md` Goal 7
 
 ---
 
@@ -116,6 +116,6 @@ This is a shell script that exercises the YAML parsing and matching logic.
 
 ## References
 
-- Roadmap: `specs/n2o-roadmap.md` Goal 2 (Best Tooling Always)
+- Roadmap: `specs/active/n2o-roadmap.md` Goal 2 (Best Tooling Always)
 - Existing proof of concept: detect-project auto-trigger in templates/CLAUDE.md
 - Claude Code skill system: uses YAML `description` field for matching

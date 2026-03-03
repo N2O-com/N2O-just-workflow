@@ -170,11 +170,11 @@ Allow multiple tasks to execute in parallel, even in the same file. Queue or mer
 - **Merge queue**: `merge-queue.sh` integrates completed work sequentially — rebase, test, merge. Handles conflicts at integration time.
 - **Staging discipline**: tdd-agent enforces "NEVER use `git add .`", explicitly stage files.
 - **File size linter**: `scripts/lint-file-size.sh` flags files over N lines for decomposition.
-- **Orchestrator spec**: `specs/parallel-playbook.md` defines a multi-tier automated orchestrator with 5 execution patterns (Independent, Team, Racing, Pipeline, Spec-then-Implement), iterative re-planning, and nested parallelism (teams within terminals for ~10 concurrent agents from 4 windows).
+- **Orchestrator spec**: `parallel-playbook.md` defines a multi-tier automated orchestrator with 5 execution patterns (Independent, Team, Racing, Pipeline, Spec-then-Implement), iterative re-planning, and nested parallelism (teams within terminals for ~10 concurrent agents from 4 windows).
 
 ### Desired State
 
-The orchestrator spec (`specs/parallel-playbook.md`) defines a 6-layer execution model:
+The orchestrator spec (`parallel-playbook.md`) defines a 6-layer execution model:
 
 1. **Graph analysis** — read task graph, group by spec, identify chains vs parallel sets
 2. **Pattern assignment** — map each group to an execution pattern (Team, Pipeline, Solo, Race, Decompose)
@@ -185,12 +185,12 @@ The orchestrator spec (`specs/parallel-playbook.md`) defines a 6-layer execution
 
 **v1** (Layers 1-3): Compute and display the plan. Developer launches agents manually. Immediately useful, no Agent Teams integration required.
 
-**v2+** (Layers 4-6): Auto-execution, re-planning loop, competitive racing. See `specs/parallel-playbook.md` for the full design.
+**v2+** (Layers 4-6): Auto-execution, re-planning loop, competitive racing. See `parallel-playbook.md` for the full design.
 
 ### Key Considerations
 
 - Worktree isolation + merge queue already handles the hard part (code isolation + integration). The orchestrator adds the intelligence layer: *what* to run, *where*, and *when*.
-- The orchestrator determines WHEN to use Agent Teams (same-spec parallelism) vs solo agents (chains) vs racing (ambiguous approaches). It's the decision layer above `specs/agent-teams.md`.
+- The orchestrator determines WHEN to use Agent Teams (same-spec parallelism) vs solo agents (chains) vs racing (ambiguous approaches). It's the decision layer above `agent-teams.md`.
 - Nested parallelism (Agent Teams in multiple terminals) targets 8-10 concurrent agents, matching coordination.md Goal A.
 - Small file architecture (coordination.md Goal C2) reduces conflict probability; the merge queue handles remaining conflicts at integration time.
 
@@ -210,7 +210,7 @@ Infrastructure exists; per-skill contracts and versioning not yet built:
 
 - **Skill linter**: `scripts/lint-skills.sh` — manifest-driven validation of phase-transition markers in SKILL.md files. Checks all 3 agent skills.
 - **Quality tests**: `tests/test-n2o-skills.sh` — 16 tests validating YAML frontmatter, trigger descriptions, auto-invocation config, and CLAUDE.md integration.
-- **Quality spec**: `specs/skill-quality.md` — comprehensive measurement framework (token usage, duration, exploration ratio, blow-up factors).
+- **Quality spec**: `skill-quality.md` — comprehensive measurement framework (token usage, duration, exploration ratio, blow-up factors).
 - **3-subagent audits**: tdd-agent runs Pattern Compliance, Gap Analysis, Testing Posture audits per task.
 - **CODIFY phase**: Reports patterns for user review rather than auto-documenting.
 - No skill versioning, no A/B testing, no per-skill success criteria docs.
@@ -254,7 +254,7 @@ Core observability infrastructure implemented:
 
 - **Credit usage tracking**: Track Claude API token consumption per task/sprint/developer. Depends on what Claude Code exposes.
 - **Conversation transcripts**: Full conversation logs for replay and debugging. Storage/retention policy needed.
-- **Dashboard integration**: Web dashboard to surface observability data (see `specs/workflow-dashboard.md`).
+- **Dashboard integration**: Web dashboard to surface observability data (see `workflow-dashboard.md`).
 
 ### Priority / Effort
 
@@ -268,7 +268,7 @@ Make it possible for people to contribute meaningful work from anywhere — phon
 
 ### Current State — Not Started
 
-The framework is entirely CLI-driven. All contribution requires a terminal, git, SQLite, and bash. There is no web UI, no mobile interface, no push notifications. The workflow dashboard spec (`specs/workflow-dashboard.md`) describes a Next.js visualization layer but frames it as read-mostly — viewing status, not taking action.
+The framework is entirely CLI-driven. All contribution requires a terminal, git, SQLite, and bash. There is no web UI, no mobile interface, no push notifications. The workflow dashboard spec (`workflow-dashboard.md`) describes a Next.js visualization layer but frames it as read-mostly — viewing status, not taking action.
 
 ### Desired State
 
@@ -353,12 +353,12 @@ The agent doesn't need to be sophisticated at first — even a simple "regenerat
 
 - **Not everything needs to be mobile.** Deep coding belongs at a desk. The goal is to unlock the 30-40% of work that's review, triage, communication, and small edits.
 - **PWA vs native app**: PWA is faster to ship and works cross-platform. Native app only if push notifications or offline access demand it.
-- **The dashboard spec is a foundation**: `specs/workflow-dashboard.md` already describes the data layer (Supabase), real-time subscriptions, and task claiming. Goal 8 builds on that by making the surfaces actionable and mobile-first.
+- **The dashboard spec is a foundation**: `workflow-dashboard.md` already describes the data layer (Supabase), real-time subscriptions, and task claiming. Goal 8 builds on that by making the surfaces actionable and mobile-first.
 - **Security**: Mobile access to code and task data needs auth. Supabase Auth handles this, but the threat model changes when devices are on public networks.
 
 ### Priority / Effort
 
-**Future**. Depends on Goal 4 (team collaboration infrastructure) and Goal 7 (data to display). The workflow dashboard (from `specs/workflow-dashboard.md`) is the natural first step — once it exists, making it mobile-responsive and adding action buttons is incremental. Effort: Medium (mobile contribution), High (ambient displays, AI-assisted edits).
+**Future**. Depends on Goal 4 (team collaboration infrastructure) and Goal 7 (data to display). The workflow dashboard (from `workflow-dashboard.md`) is the natural first step — once it exists, making it mobile-responsive and adding action buttons is incremental. Effort: Medium (mobile contribution), High (ambient displays, AI-assisted edits).
 
 ---
 
@@ -388,7 +388,7 @@ The agent doesn't need to be sophisticated at first — even a simple "regenerat
 - **Deferred**: Linear sync E2E (awaiting rework), `--interactive` flag, monorepo detection
 
 ### Phase 3 — Parallelization & Automation (Medium-term)
-- **Goal 5**: Orchestrator v1 (plan computation + display), pattern assignment (see `specs/parallel-playbook.md`)
+- **Goal 5**: Orchestrator v1 (plan computation + display), pattern assignment (see `parallel-playbook.md`)
 - **Goal 6**: Skill versioning, basic A/B comparison
 - **Goal 7**: Credit tracking, conversation logging, reversion dashboard
 
@@ -398,7 +398,7 @@ The agent doesn't need to be sophisticated at first — even a simple "regenerat
 - **Goal 3**: Dashboard/HTML init interface
 - **Goal 6**: Full A/B testing framework
 - **Goal 8**: Workflow dashboard (read + action), mobile-responsive, task claiming/review from phone
-- **Workflow Coach**: Proactive coaching system that observes developer patterns and suggests improvements (see `specs/workflow-coach.md`). Three layers: workflow coaching (embedded, uses existing data), system/environment coaching (native app), tool recommendations (curated knowledge base). Start with Layer 1 embedded in session hook to validate concept.
+- **Workflow Coach**: Proactive coaching system that observes developer patterns and suggests improvements (see `workflow-coach.md`). Three layers: workflow coaching (embedded, uses existing data), system/environment coaching (native app), tool recommendations (curated knowledge base). Start with Layer 1 embedded in session hook to validate concept.
 
 ### Phase 5 — Ubiquitous Access (Future)
 - **Goal 8**: Mobile-first contribution surfaces (PWA), push notifications, quick task creation

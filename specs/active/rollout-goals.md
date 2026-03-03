@@ -177,7 +177,7 @@ Natively makes people faster. Metrics prove it.
 | Peak Agents | Peak overlapping agents incl. subagents (all `transcripts`) | `transcripts` | `n2o:1707-1708` |
 | Brain Cycles | Avg user messages per task | `transcripts.user_message_count` | `n2o:1703-1705` |
 
-All 8 metrics appear in both terminal output (`n2o stats`) and JSON output (`n2o stats --json`). Definitions documented in `specs/metrics-definition.md`.
+All 8 metrics appear in both terminal output (`n2o stats`) and JSON output (`n2o stats --json`). Definitions documented in `metrics-definition.md`.
 
 **Verification:**
 - `test-n2o-stats.sh`: `test_stats_json_keys` confirms JSON output has all required top-level keys
@@ -247,9 +247,9 @@ The full user journey is tested end-to-end in `tests/test-n2o-e2e.sh` (27 tests)
 | ~~Transcript collection not automated~~ | 3 | ~~Medium~~ | ~~Done — SessionEnd hook triggers `collect-transcripts.sh`~~ |
 | ~~Concurrent sessions not persisted~~ | 3 | ~~Low~~ | ~~Done — Session hook writes to `developer_context` table~~ |
 | ~~`n2o stats --compare` untested~~ | 2 | ~~Low~~ | ~~Done — 7 tests in `test-n2o-stats.sh` cover JSON structure, token/duration/precision values, terminal sections, and empty-data fallbacks~~ |
-| Observatory dashboard | 4 | Deferred | Phase 2 — `specs/workflow-dashboard.md` |
+| Observatory dashboard | 4 | Deferred | Phase 2 — `workflow-dashboard.md` |
 | NLP-based analysis nodes | 2 | Deferred | Phase 2 |
-| Subscription cost tracking | 4 | Deferred | `specs/subscription-management.md` — admin-only feature |
+| Subscription cost tracking | 4 | Deferred | `subscription-management.md` — admin-only feature |
 
 ---
 
@@ -300,7 +300,7 @@ A short checklist (not the full onboarding doc) for verifying a fresh install wo
 ```
 
 ### 6. Theoretical clarity before dashboard
-The leadership dashboard (`specs/workflow-dashboard.md`) is downstream of getting the Output/Hour framework and brain cycle model clear. The right sequence:
+The leadership dashboard (`workflow-dashboard.md`) is downstream of getting the Output/Hour framework and brain cycle model clear. The right sequence:
 1. **Theory / HTML diagram** — nail down the visual model
 2. **Metrics definition refinement** — validate the 10 metrics map to the theory
 3. **Dashboard** — build it knowing what story the data tells
@@ -313,10 +313,10 @@ Don't build the dashboard until steps 1-2 are done, or you'll redesign it.
 
 | Item | Spec | Description |
 |------|------|-------------|
-| Theoretical clarity + HTML diagram | `specs/future-phases.md` | Visual Output/Hour framework — prerequisite for dashboard |
-| Observatory dashboard | `specs/workflow-dashboard.md` | GraphQL API + Next.js dashboard for leadership metrics |
+| Theoretical clarity + HTML diagram | `../README.md` | Visual Output/Hour framework — prerequisite for dashboard |
+| Observatory dashboard | `workflow-dashboard.md` | GraphQL API + Next.js dashboard for leadership metrics |
 | NLP analysis nodes | — | Natural language analysis of transcript content |
-| Subscription management | `specs/subscription-management.md` | Per-developer plan tracking, admin-only CLI |
-| Supabase setup automation | `specs/future-phases.md` | `n2o setup --supabase` guided CLI setup |
-| Clawdbot workflow research | `specs/future-phases.md` | Study high-velocity shipping patterns |
-| Git policy documentation | `specs/future-phases.md` | Branching strategy, merge conventions, worktree lifecycle |
+| Subscription management | `subscription-management.md` | Per-developer plan tracking, admin-only CLI |
+| Supabase setup automation | `../README.md` | `n2o setup --supabase` guided CLI setup |
+| Clawdbot workflow research | `../README.md` | Study high-velocity shipping patterns |
+| Git policy documentation | `../README.md` | Branching strategy, merge conventions, worktree lifecycle |

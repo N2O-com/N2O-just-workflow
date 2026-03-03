@@ -7,7 +7,7 @@
 | Status | Draft |
 | Owner | Wiley |
 | Last Updated | 2026-02-23 |
-| Depends On | `specs/observability.md`, `specs/workflow-dashboard.md`, `specs/coordination.md` |
+| Depends On | `../done/observability.md`, `workflow-dashboard.md`, `coordination.md` |
 | Enables | Roadmap Goal 8 (Ubiquitous Access), dynamic dashboards, natural language project queries |
 
 ---
@@ -35,7 +35,7 @@
 |------|-------------|---------|
 | 2026-02-23 | Major model revision: UUID projects with flexible metadata, dynamic skill tree (not 6 fixed integers), numeric complexity, minutes not hours, developer context tracking (concurrent sessions, alertness, time-of-day), effectiveness as relative-to-mean multiplier, removed source from availability | [Schema](#schema), [Design](#design) |
 | 2026-02-23 | Layer 3 no longer depends on Layer 2 — can ship with ontology-only LLM queries, rules enhance later | [Implementation Plan](#implementation-plan), [Layer 3](#layer-3-intelligence-llm) |
-| 2026-02-23 | Added multi-signal reasoning requirements to Layer 2 (DLA analogy, N2O worked example), GraphQL→graph DB migration path in Layer 1, chat component backend migration note. Removed GPS references — designing rules engine independently, see `specs/rules-engine.md` | [Layer 1](#layer-1-ontology-graphql-api), [Layer 2](#layer-2-rules-engine), [Open Questions](#open-questions) |
+| 2026-02-23 | Added multi-signal reasoning requirements to Layer 2 (DLA analogy, N2O worked example), GraphQL→graph DB migration path in Layer 1, chat component backend migration note. Removed GPS references — designing rules engine independently, see `rules-engine.md` | [Layer 1](#layer-1-ontology-graphql-api), [Layer 2](#layer-2-rules-engine), [Open Questions](#open-questions) |
 | 2026-02-23 | Initial draft | All |
 
 ---
@@ -65,7 +65,7 @@ Three layers, inspired by Palantir's Foundry, built incrementally on the existin
 
 **Layer 1 — Ontology**: A GraphQL API that serves as the semantic data model. All entities and relationships queryable through a single endpoint. Schema introspection lets LLMs discover the data model without documentation.
 
-**Layer 2 — Rules Engine**: Business logic encoded as composable, testable rules that combine multiple signals into weighted confidence scores. Capacity ("Luke can take 5 more tasks this week"), assignment ("best fit for this task"), risk ("sprint is at-risk"), forecasting ("finishes Wednesday at current pace"). Detailed design in `specs/rules-engine.md`.
+**Layer 2 — Rules Engine**: Business logic encoded as composable, testable rules that combine multiple signals into weighted confidence scores. Capacity ("Luke can take 5 more tasks this week"), assignment ("best fit for this task"), risk ("sprint is at-risk"), forecasting ("finishes Wednesday at current pace"). Detailed design in `rules-engine.md`.
 
 **Layer 3 — Intelligence**: An LLM with read access to the Ontology and execute access to Rules. Powers natural language queries ("how's the sprint?") and dynamic dashboard generation — dashboards assembled from data + rules + visualization primitives, not pre-built templates.
 
@@ -164,7 +164,7 @@ One request, all the data, exactly the shape needed. Note `blowUpRatio` = actual
 
 ### Layer 2: Rules Engine
 
-Detailed design in `specs/rules-engine.md`. This section captures requirements; the separate spec covers the Software 1.0/2.0/3.0 architecture.
+Detailed design in `rules-engine.md`. This section captures requirements; the separate spec covers the Software 1.0/2.0/3.0 architecture.
 
 **What the rules engine needs to do:**
 
@@ -207,11 +207,11 @@ Combined inference: Despite Luke's slightly higher skill rating, Sarah is the be
 **What this requires from the rules engine:**
 
 1. **Rules produce weighted signals, not final answers.** Each rule contributes a score and a confidence, not a boolean. The composition layer combines them.
-2. **A signal combination mechanism.** Could be weighted scoring, Bayesian inference, or learned weights. See `specs/rules-engine.md` for the Software 1.0→2.0→3.0 progression.
+2. **A signal combination mechanism.** Could be weighted scoring, Bayesian inference, or learned weights. See `rules-engine.md` for the Software 1.0→2.0→3.0 progression.
 3. **Contextual priors as first-class inputs.** `developer_context` isn't just a standalone data source — it modifies every other rule's output. A skill rating of 4.2 means something different at alertness 0.9 vs 0.4.
 4. **Explanation chains.** For multi-signal decisions: "Here are the 5 signals I combined, here's how they weighted, here's why the conclusion follows." This is what makes the system trustworthy and debuggable.
 
-**Detailed design:** See `specs/rules-engine.md` for how signals combine, the Software 1.0/2.0/3.0 progression, and the confidence scoring architecture.
+**Detailed design:** See `rules-engine.md` for how signals combine, the Software 1.0/2.0/3.0 progression, and the confidence scoring architecture.
 
 ### Layer 3: Intelligence (LLM)
 
@@ -249,7 +249,7 @@ Given a question, the Intelligence layer determines what data to fetch (ontology
 
 ### Pre-Built Dashboards
 
-Default views powered by the Ontology (from `specs/workflow-dashboard.md`):
+Default views powered by the Ontology (from `workflow-dashboard.md`):
 
 1. **Board View** — Kanban with TDD phases, task claiming
 2. **Graph View** — dependency visualization
@@ -448,7 +448,7 @@ WHERE t.started_at IS NOT NULL AND t.completed_at IS NOT NULL;
 | 0 | **Schema foundations** — add sprints, projects, contributor_availability, activity_log tables. Backfill sprints from existing task data. | Nothing | — |
 | 1 | **GraphQL Ontology** — Apollo Server, TypeScript, full schema for all entities, resolvers wrapping existing SQL views, JSONL transcript reader | Phase 0 | — |
 | 2 | **Intelligence (ontology-only)** — LLM tools for `query_ontology` + `generate_chart`, natural language queries, dynamic dashboard generation. Works without rules engine. | Phase 1 | — |
-| 3 | **Rules Engine** — Software 1.0 first (hand-tuned weighted scoring), then 2.0 (learned weights from historical data). See `specs/rules-engine.md`. Expose via GraphQL, add `execute_rule` tool to Intelligence layer. | Nothing (design in parallel with Phase 0-2) | Parallel with Phase 2 |
+| 3 | **Rules Engine** — Software 1.0 first (hand-tuned weighted scoring), then 2.0 (learned weights from historical data). See `rules-engine.md`. Expose via GraphQL, add `execute_rule` tool to Intelligence layer. | Nothing (design in parallel with Phase 0-2) | Parallel with Phase 2 |
 | 4 | **Dashboard migration** — pre-built views powered by GraphQL, Next.js frontend, Supabase for multi-user | Phase 1 | Parallel with Phase 2-3 |
 
 ---
@@ -472,10 +472,10 @@ WHERE t.started_at IS NOT NULL AND t.completed_at IS NOT NULL;
 
 ## References
 
-- `specs/workflow-dashboard.md` — dashboard views, adapter interface, Supabase schema
-- `specs/coordination.md` — Supabase shared store, developer twins
-- `specs/observability.md` — data collection pipeline, workflow_events
-- `specs/developer-twin.md` — twin data model, routing interface
+- `workflow-dashboard.md` — dashboard views, adapter interface, Supabase schema
+- `coordination.md` — Supabase shared store, developer twins
+- `../done/observability.md` — data collection pipeline, workflow_events
+- `developer-twin.md` — twin data model, routing interface
 - `.pm/schema.sql` — current database schema (6 tables, 30+ views)
 - [Palantir Foundry Ontology](https://www.palantir.com/docs/foundry/ontology/overview) — architectural inspiration
-- `specs/rules-engine.md` — Layer 2 detailed design (Software 1.0/2.0/3.0 architecture)
+- `rules-engine.md` — Layer 2 detailed design (Software 1.0/2.0/3.0 architecture)

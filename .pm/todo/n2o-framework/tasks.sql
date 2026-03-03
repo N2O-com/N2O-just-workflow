@@ -21,12 +21,12 @@ INSERT INTO tasks (sprint, task_num, title, type, status, horizon, description, 
 INSERT INTO tasks (sprint, task_num, title, type, status, horizon, description, done_when) VALUES
 ('framework-v1', 2, 'Write observability spec', 'docs', 'green', 'active',
   'Spec covering JSONL transcript parsing, workflow_events schema, transcript collection, phase timing, analysis views. Includes "Future: Hooks" section.',
-  'specs/observability.md exists with ranked goals and implementation order');
+  'specs/done/observability.md exists with ranked goals and implementation order');
 
 INSERT INTO tasks (sprint, task_num, title, type, status, horizon, description, done_when) VALUES
 ('framework-v1', 3, 'Write N2O roadmap spec', 'docs', 'green', 'active',
   'Comprehensive roadmap with 7 goals, dependency map, implementation phases, current maturity assessment.',
-  'specs/n2o-roadmap.md exists with all 7 goals documented');
+  'specs/active/n2o-roadmap.md exists with all 7 goals documented');
 
 INSERT INTO tasks (sprint, task_num, title, type, status, horizon, description, done_when) VALUES
 ('framework-v1', 4, 'Add priority/horizon fields to tasks schema', 'database', 'green', 'active',
@@ -175,7 +175,7 @@ INSERT INTO tasks (sprint, task_num, title, type, horizon, priority, priority_re
 INSERT INTO tasks (sprint, task_num, title, type, horizon, priority_reason, description, done_when) VALUES
 ('icebox', 1, 'Dashboard/HTML init interface', 'frontend', 'icebox',
   'Requires web stack, high effort, low ROI until team > 5',
-  'Web-based setup wizard for teams less comfortable with CLI. Could generate the n2o init command or run it directly. See specs/workflow-dashboard.md for design.',
+  'Web-based setup wizard for teams less comfortable with CLI. Could generate the n2o init command or run it directly. See specs/active/workflow-dashboard.md for design.',
   'Browser-based init flow creates a working N2O project');
 
 INSERT INTO tasks (sprint, task_num, title, type, horizon, priority_reason, description, done_when) VALUES

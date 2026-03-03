@@ -2,7 +2,7 @@
 
 **Sprint**: coordination | **Task**: #8
 **Status**: Designed
-**Implements**: Goal H (Developer Digital Twin & Intelligent Routing) from `specs/coordination.md`
+**Implements**: Goal H (Developer Digital Twin & Intelligent Routing) from `coordination.md`
 **Consumed by**: Task #9 (Routing Scoring Algorithm)
 
 ---
@@ -13,7 +13,7 @@ The Developer Digital Twin is a per-developer data model that tracks current con
 
 This spec defines every field, where it comes from, how it's populated, and the exact interface the routing algorithm consumes.
 
-**Relationship to Data Platform** (`specs/data-platform.md`): The twin is the **real-time operational layer**; the data platform is the **analytical layer**. The twin READS from the data platform's ontology (skills via `developer_skills`, availability via `contributor_availability`, velocity views, `baseline_competency`). The twin WRITES operational context that the data platform captures (`developer_context` snapshots, `activity_log` events). The routing algorithm is a future Layer 2 Rules Engine candidate.
+**Relationship to Data Platform** (`data-platform.md`): The twin is the **real-time operational layer**; the data platform is the **analytical layer**. The twin READS from the data platform's ontology (skills via `developer_skills`, availability via `contributor_availability`, velocity views, `baseline_competency`). The twin WRITES operational context that the data platform captures (`developer_context` snapshots, `activity_log` events). The routing algorithm is a future Layer 2 Rules Engine candidate.
 
 ---
 
@@ -318,7 +318,7 @@ DONE
 
 ### Local SQLite: Changes to `developers` table
 
-The data platform migration (see `specs/data-platform.md`) handles the structural changes to `developers`:
+The data platform migration (see `data-platform.md`) handles the structural changes to `developers`:
 - Drop fixed `skill_*` columns (replaced by `developer_skills` table)
 - Add `baseline_competency REAL` and `competency_assessed_at DATETIME`
 
@@ -713,5 +713,5 @@ These are documented for awareness. None block implementation.
 1. **Task expected files heuristic**: MVP uses "files from same-spec completed tasks" as a proxy. Post-MVP could parse task descriptions for file paths or use pm-agent to annotate tasks with expected files at planning time.
 2. **Weight tuning**: Initial weights are educated guesses. After routing has been running for 2-3 sprints, analyze outcomes (did the developer actually complete the task faster than alternatives?) and tune weights.
 3. **Multi-machine twin merge**: If a developer runs sessions on two machines simultaneously, their twins could diverge. Supabase `updated_at` timestamp + last-write-wins is sufficient for MVP. Post-MVP could merge loaded_files arrays.
-4. **Routing → Rules Engine migration**: The `score_task()` function is a natural candidate for the data platform's Layer 2 Rules Engine (see `specs/data-platform.md`). When the rules engine ships, the 6-signal scoring function becomes a composable, testable, explainable rule rather than a standalone bash function. The twin still provides the real-time operational data; the rules engine provides the scoring logic.
+4. **Routing → Rules Engine migration**: The `score_task()` function is a natural candidate for the data platform's Layer 2 Rules Engine (see `data-platform.md`). When the rules engine ships, the 6-signal scoring function becomes a composable, testable, explainable rule rather than a standalone bash function. The twin still provides the real-time operational data; the rules engine provides the scoring logic.
 5. **Calculated skill ratings**: As task completion data accumulates, `developer_skills.source = 'calculated'` entries can be auto-generated from velocity-by-type data. E.g., if a developer consistently completes frontend tasks 40% faster than average with low blow-up ratios, their `frontend > react` rating increases. This is a data platform concern but feeds back into the twin's skill snapshot.
