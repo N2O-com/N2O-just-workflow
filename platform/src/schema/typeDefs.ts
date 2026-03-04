@@ -1,67 +1,105 @@
 export const typeDefs = `#graphql
   type Query {
-    # Tasks
+    """Fetch a single task by sprint name and task number"""
     task(sprint: String!, taskNum: Int!): Task
+
+    """List tasks with optional filters for sprint, status, owner, or horizon"""
     tasks(sprint: String, status: String, owner: String, horizon: String): [Task!]!
+
+    """List tasks that are pending with all dependencies satisfied"""
     availableTasks: [Task!]!
 
-    # Sprints
+    """Fetch a single sprint by name"""
     sprint(name: String!): Sprint
+
+    """List sprints with optional status or project filter"""
     sprints(status: String, projectId: String): [Sprint!]!
 
-    # Projects
+    """Fetch a single project by ID"""
     project(id: ID!): Project
+
+    """List all projects"""
     projects: [Project!]!
 
-    # Developers
+    """Fetch a single developer by name"""
     developer(name: String!): Developer
+
+    """List all developers with their roles and competency profiles"""
     developers: [Developer!]!
 
-    # Activity
+    """Recent activity log entries: task completions, phase transitions, and manual logs"""
     activityLog(limit: Int, developer: String): [Activity!]!
+
+    """Developer coding session conversations with messages and tool calls"""
     conversationFeed(limit: Int, developer: String): [SessionConversation!]!
 
-    # Events
+    """Workflow events: phase transitions, tool invocations, agent activity"""
     events(sessionId: String, sprint: String, taskNum: Int, eventType: String, limit: Int): [Event!]!
 
-    # Transcripts
+    """Session transcripts with token counts, message counts, and timing"""
     transcripts(sprint: String, taskNum: Int, sessionId: String): [Transcript!]!
 
     # ── Analytics ──────────────────────────────────────────────
 
-    # Skill analytics
+    """Skill/tool usage frequency: invocation counts and session counts per tool"""
     skillUsage: [SkillUsage!]!
+
+    """Token consumption per skill per sprint: input/output tokens and cost proxy"""
     skillTokenUsage(sprint: String): [SkillTokenUsage!]!
+
+    """Token usage broken down by skill version for version-over-version comparison"""
     skillVersionTokenUsage(skillName: String): [SkillVersionTokenUsage!]!
+
+    """Time spent per skill per sprint in seconds"""
     skillDuration(sprint: String): [SkillDuration!]!
+
+    """Duration stats per skill version: avg, min, max seconds"""
     skillVersionDuration(skillName: String): [SkillVersionDuration!]!
+
+    """Exploration ratio per skill: files read vs files modified (lower is more precise)"""
     skillPrecision(sprint: String): [SkillPrecision!]!
+
+    """Precision stats per skill version: average exploration ratio across tasks"""
     skillVersionPrecision(skillName: String): [SkillVersionPrecision!]!
 
-    # Velocity analytics
+    """Developer learning rate: avg blow-up ratio per sprint showing improvement over time"""
     developerLearningRate(owner: String): [LearningRate!]!
+
+    """Time distribution across TDD phases (RED, GREEN, REFACTOR, AUDIT) per task"""
     phaseTimingDistribution(sprint: String): [PhaseTimingDistribution!]!
+
+    """Token efficiency trend: average tokens consumed per task by sprint and complexity"""
     tokenEfficiencyTrend: [TokenEfficiency!]!
+
+    """Tasks that exceeded estimates: blow-up ratio, reversions, and testing posture"""
     blowUpFactors(sprint: String): [BlowUpFactor!]!
 
-    # Estimation analytics
+    """Estimation accuracy per developer: avg estimated vs actual hours and error"""
     estimationAccuracy(owner: String): [EstimationAccuracy!]!
+
+    """Estimation accuracy grouped by task type (database, frontend, infra, etc.)"""
     estimationAccuracyByType: [EstimationAccuracyByType!]!
+
+    """Estimation accuracy grouped by complexity level (low, medium, high)"""
     estimationAccuracyByComplexity: [EstimationAccuracyByComplexity!]!
 
-    # Quality analytics
+    """Developer quality metrics: reversions per task, A-grade testing percentage"""
     developerQuality(owner: String): [DeveloperQuality!]!
+
+    """Common audit findings per developer: fake tests, pattern violations, below-A grades"""
     commonAuditFindings(owner: String): [AuditFindings!]!
+
+    """Reversion hotspots by task type and complexity: where quality issues cluster"""
     reversionHotspots: [ReversionHotspot!]!
 
-    # Sprint analytics
+    """Sprint velocity: completed tasks, avg hours per task, total hours per sprint"""
     sprintVelocity(sprint: String): [SprintVelocity!]!
 
-    # Session timeline (for Gantt chart)
+    """Session timeline for Gantt chart: session start/end, tokens, tool calls, subagents"""
     sessionTimeline(developer: String, dateFrom: String, dateTo: String): [SessionTimelineEntry!]!
 
-    # Data health monitoring
-    dataHealth: [DataHealthStream!]!
+    """Data health monitoring: row counts, last updated timestamps, recent activity per stream"""
+    dataHealth: DataHealth!
   }
 
   type Mutation {
@@ -398,8 +436,8 @@ export const typeDefs = `#graphql
     title: String
     type: String
     complexity: String
-    estimatedHours: Float
-    actualHours: Float
+    estimatedMinutes: Float
+    actualMinutes: Float
     blowUpRatio: Float
     reversions: Int
     testingPosture: String
@@ -411,7 +449,7 @@ export const typeDefs = `#graphql
     avgEstimated: Float
     avgActual: Float
     blowUpRatio: Float
-    avgErrorHours: Float
+    avgErrorMinutes: Float
   }
 
   type EstimationAccuracyByType {
@@ -460,8 +498,8 @@ export const typeDefs = `#graphql
   type SprintVelocity {
     sprint: String!
     completedTasks: Int!
-    avgHoursPerTask: Float
-    totalHours: Float
+    avgMinutesPerTask: Float
+    totalMinutes: Float
   }
 
   type SessionTimelineEntry {
@@ -481,6 +519,11 @@ export const typeDefs = `#graphql
     messageCount: Int
     model: String
     subagents: [SessionTimelineEntry!]!
+  }
+
+  type DataHealth {
+    streams: [DataHealthStream!]!
+    lastSessionEndedAt: String
   }
 
   type DataHealthStream {

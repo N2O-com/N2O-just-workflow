@@ -1,0 +1,208 @@
+/**
+ * Dynamic schema introspection for LLM context.
+ * Fetches the GraphQL schema via introspection and produces a curated
+ * context string for Claude's system prompt.
+ *
+ * Caches the result with a 5-minute TTL so we don't introspect on every request.
+ */
+
+const GRAPHQL_URL = process.env.GRAPHQL_URL || "http://localhost:4000/graphql";
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+let cachedContext: string | null = null;
+let cachedAt = 0;
+
+const INTROSPECTION_QUERY = `
+  query IntrospectionQuery {
+    __schema {
+      queryType {
+        fields {
+          name
+          description
+          args {
+            name
+            type {
+              name
+              kind
+              ofType { name kind }
+            }
+          }
+          type {
+            name
+            kind
+            ofType {
+              name
+              kind
+              ofType {
+                name
+                kind
+                ofType { name kind }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+interface IntrospectionArg {
+  name: string;
+  type: {
+    name: string | null;
+    kind: string;
+    ofType?: { name: string | null; kind: string } | null;
+  };
+}
+
+interface TypeRef {
+  name: string | null;
+  kind: string;
+  ofType?: TypeRef | null;
+}
+
+interface IntrospectionField {
+  name: string;
+  description: string | null;
+  args: IntrospectionArg[];
+  type: TypeRef;
+}
+
+function formatArgType(arg: IntrospectionArg): string {
+  const t = arg.type;
+  if (t.kind === "NON_NULL") {
+    return `${t.ofType?.name ?? "Unknown"}!`;
+  }
+  return t.name ?? "Unknown";
+}
+
+function resolveTypeName(t: TypeRef | null | undefined): string {
+  if (!t) return "Unknown";
+  if (t.kind === "NON_NULL" || t.kind === "LIST") return resolveTypeName(t.ofType);
+  return t.name ?? "Unknown";
+}
+
+function formatReturnType(field: IntrospectionField): string {
+  const t = field.type;
+  if (t.kind === "NON_NULL") {
+    const inner = t.ofType;
+    if (inner?.kind === "LIST") {
+      return `[${resolveTypeName(inner.ofType)}]!`;
+    }
+    return `${inner?.name ?? "Unknown"}!`;
+  }
+  if (t.kind === "LIST") {
+    return `[${resolveTypeName(t.ofType)}]`;
+  }
+  return t.name ?? "Unknown";
+}
+
+function formatField(field: IntrospectionField): string {
+  const args = field.args.length > 0
+    ? `(${field.args.map((a) => `${a.name}: ${formatArgType(a)}`).join(", ")})`
+    : "";
+  const desc = field.description ? ` — ${field.description}` : "";
+  return `  ${field.name}${args}: ${formatReturnType(field)}${desc}`;
+}
+
+function categorize(field: IntrospectionField): string {
+  const name = field.name;
+  if (["task", "tasks", "availableTasks"].includes(name)) return "Tasks";
+  if (["sprint", "sprints"].includes(name)) return "Sprints";
+  if (["project", "projects"].includes(name)) return "Projects";
+  if (["developer", "developers"].includes(name)) return "Developers";
+  if (["activityLog", "conversationFeed"].includes(name)) return "Activity";
+  if (["events"].includes(name)) return "Events";
+  if (["transcripts"].includes(name)) return "Transcripts";
+  if (name.startsWith("skill")) return "Analytics — Skill";
+  if (["developerLearningRate", "phaseTimingDistribution", "tokenEfficiencyTrend", "blowUpFactors"].includes(name))
+    return "Analytics — Velocity";
+  if (name.startsWith("estimation")) return "Analytics — Estimation";
+  if (["developerQuality", "commonAuditFindings", "reversionHotspots"].includes(name))
+    return "Analytics — Quality";
+  if (["sprintVelocity"].includes(name)) return "Analytics — Sprint";
+  if (["sessionTimeline"].includes(name)) return "Analytics — Timeline";
+  if (["dataHealth"].includes(name)) return "System";
+  return "Other";
+}
+
+function buildSchemaContext(fields: IntrospectionField[]): string {
+  const groups = new Map<string, IntrospectionField[]>();
+  for (const field of fields) {
+    const cat = categorize(field);
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat)!.push(field);
+  }
+
+  const sections: string[] = [];
+  sections.push("# N2O GraphQL API — Available Queries\n");
+
+  const categoryOrder = [
+    "Tasks", "Sprints", "Projects", "Developers", "Activity",
+    "Events", "Transcripts",
+    "Analytics — Skill", "Analytics — Velocity",
+    "Analytics — Estimation", "Analytics — Quality",
+    "Analytics — Sprint", "Analytics — Timeline",
+    "System", "Other",
+  ];
+
+  for (const cat of categoryOrder) {
+    const catFields = groups.get(cat);
+    if (!catFields || catFields.length === 0) continue;
+    sections.push(`## ${cat}`);
+    for (const field of catFields) {
+      sections.push(formatField(field));
+    }
+    sections.push("");
+  }
+
+  sections.push("## Example Queries\n");
+  sections.push(`\`\`\`graphql
+# Get all tasks in a sprint with developer info
+{
+  tasks(sprint: "my-sprint") {
+    taskNum title status type
+    owner { name role }
+    actualMinutes blowUpRatio
+  }
+}
+
+# Developer quality with audit findings
+{
+  developerQuality { owner totalTasks totalReversions aGradePct }
+  commonAuditFindings { owner fakeTestIncidents patternViolations }
+}
+
+# Sprint velocity trend
+{
+  sprintVelocity { sprint completedTasks avgMinutesPerTask totalMinutes }
+}
+\`\`\``);
+
+  return sections.join("\n");
+}
+
+export async function getSchemaContext(): Promise<string> {
+  const now = Date.now();
+  if (cachedContext && now - cachedAt < CACHE_TTL_MS) {
+    return cachedContext;
+  }
+
+  const res = await fetch(GRAPHQL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: INTROSPECTION_QUERY }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Introspection failed: ${res.status} ${res.statusText}`);
+  }
+
+  const json = await res.json();
+  const fields: IntrospectionField[] = json.data.__schema.queryType.fields;
+
+  cachedContext = buildSchemaContext(fields);
+  cachedAt = now;
+
+  return cachedContext;
+}
