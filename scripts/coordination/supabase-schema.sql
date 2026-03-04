@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS developer_twins (
     skill_debugging INTEGER,
 
     -- Velocity (computed from activity_log)
-    velocity JSONB DEFAULT '{}',         -- {avg_hours_per_task, by_type: {frontend: 2.1, ...}}
+    velocity JSONB DEFAULT '{}',         -- {avg_minutes_per_task, by_type: {frontend: 25.1, ...}}
 
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

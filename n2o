@@ -634,7 +634,7 @@ run_health_check() {
   fi
 
   # 8. Skill directories and SKILL.md files
-  for skill in pm-agent tdd-agent bug-workflow detect-project react-best-practices web-design-guidelines; do
+  for skill in pm-agent tdd-agent bug-workflow detect-project react-best-practices web-design-guidelines code-health; do
     if [[ -d "$project_path/.claude/skills/$skill" ]]; then
       if [[ -f "$project_path/.claude/skills/$skill/SKILL.md" ]]; then
         check_pass "Skill: $skill"
@@ -1949,7 +1949,7 @@ cmd_stats() {
         (SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-30 days')) as throughput_30d,
         (SELECT ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440), 0) FROM tasks WHERE status='green' AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as efficiency_30d_min,
         (SELECT ROUND(100.0 * SUM(CASE WHEN testing_posture='A' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0) FROM tasks WHERE status='green' AND testing_posture IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as quality_30d_pct,
-        (SELECT ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0)), 1) FROM tasks WHERE status='green' AND estimated_hours IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as predictability_30d,
+        (SELECT ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440 / NULLIF(estimated_minutes, 0)), 1) FROM tasks WHERE status='green' AND estimated_minutes IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days')) as predictability_30d,
         (SELECT ROUND(AVG(estimated_cost_usd), 2) FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days')) as cost_per_task_30d,
         (SELECT ROUND(AVG(user_message_count), 1) FROM transcripts tr JOIN tasks t ON tr.sprint = t.sprint AND tr.task_num = t.task_num WHERE t.status='green' AND t.completed_at >= datetime('now', '-30 days')) as brain_cycles_30d;
     " 2>/dev/null || echo "[]")
@@ -1976,7 +1976,7 @@ cmd_stats() {
 
     local blowup_json
     blowup_json=$(sqlite3 -json "$db" "
-      SELECT sprint, task_num, title, type, complexity, estimated_hours, actual_hours, blow_up_ratio
+      SELECT sprint, task_num, title, type, complexity, estimated_minutes, actual_minutes, blow_up_ratio
       FROM blow_up_factors
       ORDER BY blow_up_ratio DESC
       LIMIT 5;
@@ -2111,8 +2111,8 @@ cmd_stats() {
   local qual_30=$(_metric_window "SELECT COALESCE(ROUND(100.0 * SUM(CASE WHEN testing_posture='A' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 0), '—') FROM tasks WHERE status='green' AND testing_posture IS NOT NULL AND completed_at >= datetime('now', '-30 days');" 30)
 
   # 4. Predictability: blow-up ratio
-  local pred_7=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0)), 1), '—') FROM tasks WHERE status='green' AND estimated_hours IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-7 days');" 7)
-  local pred_30=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 24 / NULLIF(estimated_hours, 0)), 1), '—') FROM tasks WHERE status='green' AND estimated_hours IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days');" 30)
+  local pred_7=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440 / NULLIF(estimated_minutes, 0)), 1), '—') FROM tasks WHERE status='green' AND estimated_minutes IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-7 days');" 7)
+  local pred_30=$(_metric_window "SELECT COALESCE(ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440 / NULLIF(estimated_minutes, 0)), 1), '—') FROM tasks WHERE status='green' AND estimated_minutes IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at >= datetime('now', '-30 days');" 30)
 
   # 5. Adoption: % tasks using tdd-agent
   local adopt_7=$(_metric_window "SELECT COALESCE(ROUND(100.0 * COUNT(DISTINCT we.sprint || '/' || we.task_num) / NULLIF((SELECT COUNT(*) FROM tasks WHERE status='green' AND completed_at >= datetime('now', '-7 days')), 0), 0), '—') FROM workflow_events we JOIN tasks t ON we.sprint = t.sprint AND we.task_num = t.task_num WHERE we.skill_name = 'tdd-agent' AND t.completed_at >= datetime('now', '-7 days');" 7)
@@ -2376,7 +2376,7 @@ cmd_stats() {
   # Blow-up factors
   local blowup_data
   blowup_data=$(sqlite3 -separator '|' "$db" "
-    SELECT sprint, task_num, title, type, complexity, estimated_hours, actual_hours, blow_up_ratio
+    SELECT sprint, task_num, title, type, complexity, estimated_minutes, actual_minutes, blow_up_ratio
     FROM blow_up_factors
     ORDER BY blow_up_ratio DESC
     LIMIT 5;
@@ -2384,7 +2384,7 @@ cmd_stats() {
 
   if [[ -n "$blowup_data" ]]; then
     printf "  ${BOLD}Blow-Up Factors (actual > 2x estimate):${NC}\n"
-    printf "  ${BOLD}%-16s %-35s %8s %8s %6s${NC}\n" "Sprint/#" "Title" "Est(h)" "Act(h)" "Ratio"
+    printf "  ${BOLD}%-16s %-35s %8s %8s %6s${NC}\n" "Sprint/#" "Title" "Est(m)" "Act(m)" "Ratio"
     printf "  %-16s %-35s %8s %8s %6s\n" "----------------" "-----------------------------------" "--------" "--------" "------"
     while IFS='|' read -r sprint task_num title type complexity est act ratio; do
       local sprint_task="${sprint}/${task_num}"

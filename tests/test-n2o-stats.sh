@@ -123,14 +123,14 @@ seed_test_data() {
   local db="$1"
   sqlite3 "$db" <<'SQL'
     INSERT INTO tasks (sprint, task_num, title, status, type, complexity, priority,
-                       estimated_hours, owner, started_at, completed_at)
+                       estimated_minutes, owner, started_at, completed_at)
     VALUES
       ('test-sprint', 1, 'Set up infrastructure', 'green', 'infra', 'low', 1.0,
-       2.0, 'dev1', '2025-02-20 10:00:00', '2025-02-20 12:00:00'),
+       120, 'dev1', '2025-02-20 10:00:00', '2025-02-20 12:00:00'),
       ('test-sprint', 2, 'Implement feature', 'green', 'frontend', 'medium', 2.0,
-       4.0, 'dev1', '2025-02-20 13:00:00', '2025-02-20 18:00:00'),
+       240, 'dev1', '2025-02-20 13:00:00', '2025-02-20 18:00:00'),
       ('test-sprint', 3, 'Write tests', 'pending', 'e2e', 'low', 3.0,
-       1.5, NULL, NULL, NULL);
+       90, NULL, NULL, NULL);
 SQL
 }
 
@@ -222,14 +222,14 @@ test_stats_query_velocity() {
   local db="$TEST_DIR/.pm/tasks.db"
   seed_test_data "$db"
 
-  local avg_hours
-  avg_hours=$(sqlite3 "$db" "SELECT avg_hours_per_task FROM sprint_velocity WHERE sprint='test-sprint';")
-  # Task 1: 2h, Task 2: 5h → avg = 3.5
-  assert_equals "3.5" "$avg_hours" "Average hours per task should be 3.5"
+  local avg_minutes
+  avg_minutes=$(sqlite3 "$db" "SELECT avg_minutes_per_task FROM sprint_velocity WHERE sprint='test-sprint';")
+  # Task 1: 120min, Task 2: 300min → avg = 210.0
+  assert_equals "210.0" "$avg_minutes" "Average minutes per task should be 210.0"
 
-  local total_hours
-  total_hours=$(sqlite3 "$db" "SELECT total_hours FROM sprint_velocity WHERE sprint='test-sprint';")
-  assert_equals "7.0" "$total_hours" "Total hours should be 7.0"
+  local total_minutes
+  total_minutes=$(sqlite3 "$db" "SELECT total_minutes FROM sprint_velocity WHERE sprint='test-sprint';")
+  assert_equals "420.0" "$total_minutes" "Total minutes should be 420.0"
 }
 
 test_stats_query_estimation_accuracy() {

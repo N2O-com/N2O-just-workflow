@@ -295,9 +295,9 @@ cmd_sprint_summary() {
   local velocity
   velocity=$(sqlite3 -json "$DB" \
     "SELECT * FROM sprint_velocity WHERE sprint = '$sprint';" | jq '.[0] // {}')
-  local avg_hours total_hours
-  avg_hours=$(echo "$velocity" | jq -r '.avg_hours_per_task // "N/A"')
-  total_hours=$(echo "$velocity" | jq -r '.total_hours // "N/A"')
+  local avg_minutes total_minutes
+  avg_minutes=$(echo "$velocity" | jq -r '.avg_minutes_per_task // "N/A"')
+  total_minutes=$(echo "$velocity" | jq -r '.total_minutes // "N/A"')
 
   local summary="## Sprint Summary: $sprint
 
@@ -307,7 +307,7 @@ cmd_sprint_summary() {
 - 🚫 Blocked: $blocked
 - ⏳ Pending: $pending
 
-**Velocity**: $avg_hours hrs/task avg, $total_hours hrs total"
+**Velocity**: $avg_minutes min/task avg, $total_minutes min total"
 
   echo "$summary" >&2
 

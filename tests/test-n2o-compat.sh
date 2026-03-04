@@ -161,7 +161,7 @@ create_deployed_snapshot() {
   sqlite3 "$dir/.pm/tasks.db" "
     INSERT INTO tasks (sprint, task_num, title, type, status) VALUES ('test-sprint', 1, 'Setup auth', 'infra', 'green');
     INSERT INTO tasks (sprint, task_num, title, type, status) VALUES ('test-sprint', 2, 'Build UI', 'frontend', 'pending');
-    INSERT INTO tasks (sprint, task_num, title, type, status, estimated_hours) VALUES ('test-sprint', 3, 'Add tests', 'e2e', 'red', 2.0);
+    INSERT INTO tasks (sprint, task_num, title, type, status, estimated_minutes) VALUES ('test-sprint', 3, 'Add tests', 'e2e', 'red', 120);
   "
 
   # Add a custom schema extension

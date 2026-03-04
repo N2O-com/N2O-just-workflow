@@ -155,7 +155,7 @@ handle_agent_stopped() {
 }
 
 handle_transcript_collected() {
-    # Sync a single newly-collected transcript.
+    # Sync a single newly-collected transcript (aggregates + messages + tool_calls).
     # Usage: sync-task-state.sh transcript-collected <session_id> [developer]
     local session_id="${1:-}"
     local developer="${2:-}"
@@ -163,6 +163,8 @@ handle_transcript_collected() {
         return
     fi
     supabase_upsert_transcript "$session_id" ".pm/tasks.db" "$developer" 2>/dev/null || true
+    supabase_sync_session_messages "$session_id" ".pm/tasks.db" 2>/dev/null || true
+    supabase_sync_session_tool_calls "$session_id" ".pm/tasks.db" 2>/dev/null || true
 }
 
 handle_sync_transcripts() {
@@ -170,6 +172,21 @@ handle_sync_transcripts() {
     # Usage: sync-task-state.sh sync-transcripts [developer]
     local developer="${1:-}"
     supabase_sync_all_transcripts ".pm/tasks.db" "$developer" 2>/dev/null || true
+}
+
+handle_sync_all() {
+    # Sync all streams to Supabase (catch-up for all data).
+    # Usage: sync-task-state.sh sync-all [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+    # Populate skill_versions from SKILL.md frontmatter before syncing
+    bash "$SCRIPT_DIR/../sync-skill-versions.sh" "$db_path" 2>/dev/null || true
+    supabase_sync_all_transcripts "$db_path" "" 2>/dev/null || true
+    supabase_sync_all_events "$db_path" 2>/dev/null || true
+    supabase_sync_all_tasks_bulk "$db_path" 2>/dev/null || true
+    supabase_sync_developer_context "$db_path" 2>/dev/null || true
+    supabase_sync_skill_versions "$db_path" 2>/dev/null || true
+    supabase_sync_all_messages "$db_path" 2>/dev/null || true
+    supabase_sync_all_tool_calls "$db_path" 2>/dev/null || true
 }
 
 # --- Route event ---
@@ -185,6 +202,7 @@ case "$EVENT_TYPE" in
     agent-stopped)  handle_agent_stopped "$@" ;;
     transcript-collected) handle_transcript_collected "$@" ;;
     sync-transcripts) handle_sync_transcripts "$@" ;;
+    sync-all) handle_sync_all "$@" ;;
     *)
         echo "Unknown event type: $EVENT_TYPE" >&2
         ;;

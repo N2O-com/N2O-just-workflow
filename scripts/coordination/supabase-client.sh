@@ -46,6 +46,22 @@ supabase_init() {
 
 # --- Internal helpers ---
 
+_sqlite_to_json() {
+    # Produce properly-encoded JSON from SQLite query.
+    # Uses Python's sqlite3 + json for reliable encoding of text with
+    # control characters that sqlite3 -json may not escape properly.
+    local db_path="$1"
+    local query="$2"
+    python3 -c "
+import sqlite3, json, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.row_factory = sqlite3.Row
+rows = [dict(r) for r in conn.execute(sys.argv[2]).fetchall()]
+conn.close()
+json.dump(rows, sys.stdout, default=str)
+" "$db_path" "$query" 2>/dev/null
+}
+
 _supabase_request() {
     local method="$1"
     local endpoint="$2"
@@ -517,6 +533,385 @@ supabase_sync_all_transcripts() {
 
     echo "Synced: $synced, Failed: $failed" >&2
     if [ "$failed" -gt 0 ]; then
+        return 1
+    fi
+}
+
+# --- Message and tool_call sync ---
+
+supabase_sync_session_messages() {
+    # Sync messages for a session from local SQLite to Supabase.
+    # Usage: supabase_sync_session_messages <session_id> [db_path]
+    local session_id="$1"
+    local db_path="${2:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local escaped
+    escaped=$(echo "$session_id" | sed "s/'/''/g")
+
+    local msg_json
+    msg_json=$(_sqlite_to_json "$db_path" "
+        SELECT session_id, message_index, role, content, timestamp,
+               model, input_tokens, output_tokens, stop_reason
+        FROM messages
+        WHERE session_id = '$escaped' AND synced_at IS NULL;
+    ")
+
+    if [ -z "$msg_json" ] || [ "$msg_json" = "[]" ]; then
+        return 0
+    fi
+
+    local count
+    count=$(printf '%s' "$msg_json" | jq 'length')
+
+    # Chunk at 100 rows for large sessions
+    local chunk_size=100
+    local offset=0
+    while [ "$offset" -lt "$count" ]; do
+        local chunk
+        chunk=$(printf '%s' "$msg_json" | jq ".[$offset:$((offset + chunk_size))]")
+        if _supabase_request "POST" "messages" "$chunk" \
+            "Prefer: resolution=merge-duplicates,return=representation" >/dev/null 2>&1; then
+            :
+        else
+            echo "Messages sync failed for $session_id at offset $offset" >&2
+            return 1
+        fi
+        offset=$((offset + chunk_size))
+    done
+
+    # Mark as synced
+    sqlite3 "$db_path" "
+        UPDATE messages SET synced_at = datetime('now')
+        WHERE session_id = '$escaped' AND synced_at IS NULL;
+    " 2>/dev/null
+
+    echo "Synced: $count messages for $session_id" >&2
+}
+
+supabase_sync_session_tool_calls() {
+    # Sync tool_calls for a session from local SQLite to Supabase.
+    # Converts input TEXT to JSONB via jq.
+    # Usage: supabase_sync_session_tool_calls <session_id> [db_path]
+    local session_id="$1"
+    local db_path="${2:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local escaped
+    escaped=$(echo "$session_id" | sed "s/'/''/g")
+
+    local tc_json
+    tc_json=$(_sqlite_to_json "$db_path" "
+        SELECT session_id, message_index, tool_index, tool_use_id,
+               tool_name, input, output, is_error, timestamp
+        FROM tool_calls
+        WHERE session_id = '$escaped' AND synced_at IS NULL;
+    ")
+
+    if [ -z "$tc_json" ] || [ "$tc_json" = "[]" ]; then
+        return 0
+    fi
+
+    # Convert input from TEXT to proper JSON for Supabase JSONB column,
+    # and is_error from 0/1 to boolean
+    tc_json=$(printf '%s' "$tc_json" | jq '[.[] |
+        .input = (if .input != null and .input != "" then (.input | try fromjson catch null) else null end) |
+        .is_error = (.is_error == 1)
+    ]')
+
+    local count
+    count=$(printf '%s' "$tc_json" | jq 'length')
+
+    # Chunk at 100 rows (Edit diffs can be large)
+    local chunk_size=100
+    local offset=0
+    while [ "$offset" -lt "$count" ]; do
+        local chunk
+        chunk=$(printf '%s' "$tc_json" | jq ".[$offset:$((offset + chunk_size))]")
+        if _supabase_request "POST" "tool_calls" "$chunk" \
+            "Prefer: resolution=merge-duplicates,return=representation" >/dev/null 2>&1; then
+            :
+        else
+            echo "Tool calls sync failed for $session_id at offset $offset" >&2
+            return 1
+        fi
+        offset=$((offset + chunk_size))
+    done
+
+    # Mark as synced
+    sqlite3 "$db_path" "
+        UPDATE tool_calls SET synced_at = datetime('now')
+        WHERE session_id = '$escaped' AND synced_at IS NULL;
+    " 2>/dev/null
+
+    echo "Synced: $count tool_calls for $session_id" >&2
+}
+
+supabase_sync_all_messages() {
+    # Sync all unsynced messages across all sessions.
+    # Usage: supabase_sync_all_messages [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local session_ids
+    session_ids=$(sqlite3 "$db_path" "
+        SELECT DISTINCT session_id FROM messages WHERE synced_at IS NULL;
+    " 2>/dev/null)
+
+    if [ -z "$session_ids" ]; then
+        echo "All messages already synced" >&2
+        return 0
+    fi
+
+    local synced=0
+    local failed=0
+    while IFS= read -r sid; do
+        [ -z "$sid" ] && continue
+        if supabase_sync_session_messages "$sid" "$db_path" 2>/dev/null; then
+            ((synced++)) || true
+        else
+            ((failed++)) || true
+        fi
+    done <<< "$session_ids"
+
+    echo "Messages: $synced sessions synced, $failed failed" >&2
+}
+
+supabase_sync_all_tool_calls() {
+    # Sync all unsynced tool_calls across all sessions.
+    # Usage: supabase_sync_all_tool_calls [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local session_ids
+    session_ids=$(sqlite3 "$db_path" "
+        SELECT DISTINCT session_id FROM tool_calls WHERE synced_at IS NULL;
+    " 2>/dev/null)
+
+    if [ -z "$session_ids" ]; then
+        echo "All tool_calls already synced" >&2
+        return 0
+    fi
+
+    local synced=0
+    local failed=0
+    while IFS= read -r sid; do
+        [ -z "$sid" ] && continue
+        if supabase_sync_session_tool_calls "$sid" "$db_path" 2>/dev/null; then
+            ((synced++)) || true
+        else
+            ((failed++)) || true
+        fi
+    done <<< "$session_ids"
+
+    echo "Tool calls: $synced sessions synced, $failed failed" >&2
+}
+
+# --- Bulk sync: all streams ---
+
+supabase_sync_all_events() {
+    # Sync workflow_events to Supabase (incremental by max remote ID).
+    # Usage: supabase_sync_all_events [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    # Get the max ID already in Supabase
+    local remote_max_id
+    remote_max_id=$(curl -s \
+        -H "apikey: ${_SUPABASE_KEY}" \
+        -H "Authorization: Bearer ${_SUPABASE_KEY}" \
+        "${_SUPABASE_URL}/rest/v1/workflow_events?select=id&order=id.desc&limit=1" \
+        2>/dev/null | jq -r '.[0].id // 0')
+
+    local local_count
+    local_count=$(sqlite3 "$db_path" "
+        SELECT COUNT(*) FROM workflow_events WHERE id > $remote_max_id;
+    " 2>/dev/null)
+
+    if [ "$local_count" -eq 0 ] 2>/dev/null; then
+        echo "All workflow events already synced" >&2
+        return 0
+    fi
+
+    echo "Syncing $local_count new workflow event(s) (after id $remote_max_id)..." >&2
+
+    # Batch in chunks of 500 to avoid payload limits
+    local offset=0
+    local chunk_size=500
+    local synced=0
+
+    while true; do
+        local batch_json
+        batch_json=$(_sqlite_to_json "$db_path" "
+            SELECT id, timestamp, session_id, sprint, task_num,
+                   event_type, tool_name, tool_use_id, skill_name,
+                   skill_version, phase, agent_id, agent_type,
+                   input_tokens, output_tokens, tool_calls_in_msg,
+                   metadata
+            FROM workflow_events
+            WHERE id > $remote_max_id
+            ORDER BY id
+            LIMIT $chunk_size OFFSET $offset;
+        ")
+
+        if [ -z "$batch_json" ] || [ "$batch_json" = "[]" ]; then
+            break
+        fi
+
+        # Convert metadata from TEXT to proper JSON for Supabase JSONB column
+        batch_json=$(printf '%s' "$batch_json" | jq '[.[] | .metadata = (
+            if .metadata != null and .metadata != "" then
+                (.metadata | try fromjson catch null)
+            else null end
+        )]')
+
+        if _supabase_request "POST" "workflow_events" "$batch_json" \
+            "Prefer: resolution=merge-duplicates,return=representation" >/dev/null 2>&1; then
+            local batch_count
+            batch_count=$(printf '%s' "$batch_json" | jq 'length')
+            synced=$((synced + batch_count))
+            offset=$((offset + chunk_size))
+        else
+            echo "Batch at offset $offset failed" >&2
+            return 1
+        fi
+    done
+
+    echo "Synced: $synced workflow events" >&2
+}
+
+supabase_sync_all_tasks_bulk() {
+    # Sync ALL tasks across all sprints to Supabase.
+    # Unlike supabase_sync_all_tasks (single sprint), this does every sprint.
+    # Usage: supabase_sync_all_tasks_bulk [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local tasks_json
+    tasks_json=$(_sqlite_to_json "$db_path" "
+        SELECT sprint, task_num, title, description, done_when,
+               status, blocked_reason, type, owner, skills,
+               session_id, priority, priority_reason,
+               assignment_reason, horizon,
+               estimated_minutes, complexity, complexity_notes,
+               reversions, pattern_audited, pattern_audit_notes,
+               skills_updated, skills_update_notes,
+               tests_pass, testing_posture, verified,
+               started_at, completed_at, merged_at,
+               commit_hash, lines_added, lines_removed,
+               external_id, external_url,
+               created_at, updated_at
+        FROM tasks;
+    ")
+
+    if [ -z "$tasks_json" ] || [ "$tasks_json" = "[]" ]; then
+        echo "No tasks to sync" >&2
+        return 0
+    fi
+
+    local count
+    count=$(printf '%s' "$tasks_json" | jq 'length')
+    echo "Syncing $count task(s)..." >&2
+
+    # Convert SQLite booleans (0/1) to JSON booleans
+    tasks_json=$(printf '%s' "$tasks_json" | jq '[.[] |
+        .pattern_audited = (.pattern_audited == 1) |
+        .skills_updated = (.skills_updated == 1) |
+        .tests_pass = (.tests_pass == 1) |
+        .verified = (.verified == 1)
+    ]')
+
+    if _supabase_request "POST" "tasks" "$tasks_json" \
+        "Prefer: resolution=merge-duplicates,return=representation" >/dev/null 2>&1; then
+        echo "Synced: $count tasks" >&2
+    else
+        echo "Task sync failed" >&2
+        return 1
+    fi
+}
+
+supabase_sync_developer_context() {
+    # Sync all developer_context rows to Supabase.
+    # Usage: supabase_sync_developer_context [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local ctx_json
+    ctx_json=$(_sqlite_to_json "$db_path" "
+        SELECT id, developer, recorded_at, concurrent_sessions,
+               hour_of_day, alertness, environment, notes
+        FROM developer_context;
+    ")
+
+    if [ -z "$ctx_json" ] || [ "$ctx_json" = "[]" ]; then
+        echo "No developer context to sync" >&2
+        return 0
+    fi
+
+    local count
+    count=$(printf '%s' "$ctx_json" | jq 'length')
+    echo "Syncing $count developer context row(s)..." >&2
+
+    if _supabase_request "POST" "developer_context" "$ctx_json" \
+        "Prefer: resolution=merge-duplicates,return=representation" >/dev/null 2>&1; then
+        echo "Synced: $count developer context rows" >&2
+    else
+        echo "Developer context sync failed" >&2
+        return 1
+    fi
+}
+
+supabase_sync_skill_versions() {
+    # Sync all skill_versions rows to Supabase.
+    # Usage: supabase_sync_skill_versions [db_path]
+    local db_path="${1:-.pm/tasks.db}"
+
+    if [ "$_SUPABASE_CONFIGURED" != "true" ]; then
+        return 1
+    fi
+
+    local sv_json
+    sv_json=$(_sqlite_to_json "$db_path" "
+        SELECT id, skill_name, version, framework_version,
+               introduced_at, changelog
+        FROM skill_versions;
+    ")
+
+    if [ -z "$sv_json" ] || [ "$sv_json" = "[]" ]; then
+        echo "No skill versions to sync" >&2
+        return 0
+    fi
+
+    local count
+    count=$(printf '%s' "$sv_json" | jq 'length')
+    echo "Syncing $count skill version(s)..." >&2
+
+    if _supabase_request "POST" "skill_versions" "$sv_json" \
+        "Prefer: resolution=merge-duplicates,return=representation" >/dev/null 2>&1; then
+        echo "Synced: $count skill versions" >&2
+    else
+        echo "Skill versions sync failed" >&2
         return 1
     fi
 }
