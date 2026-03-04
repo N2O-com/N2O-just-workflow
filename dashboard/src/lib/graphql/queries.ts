@@ -286,7 +286,7 @@ export const TASKS_BOARD_QUERY = gql`
 
 export const ACTIVITY_FEED_QUERY = gql`
   query ActivityFeed {
-    activityLog(limit: 200) {
+    activityLog(limit: 1000) {
       id
       timestamp
       developer
@@ -295,6 +295,47 @@ export const ACTIVITY_FEED_QUERY = gql`
       taskNum
       summary
       metadata
+      sessionId
+      taskTitle
+    }
+  }
+`;
+
+// ── Conversation Feed ────────────────────────────────────
+
+export const CONVERSATION_FEED_QUERY = gql`
+  query ConversationFeed($limit: Int, $developer: String) {
+    conversationFeed(limit: $limit, developer: $developer) {
+      sessionId
+      developer
+      sprint
+      taskNum
+      taskTitle
+      startedAt
+      endedAt
+      model
+      messages {
+        role
+        content
+        timestamp
+        toolCalls {
+          name
+          summary
+        }
+      }
+    }
+  }
+`;
+
+// ── Data Health ──────────────────────────────────────────
+
+export const DATA_HEALTH_QUERY = gql`
+  query DataHealth {
+    dataHealth {
+      stream
+      count
+      lastUpdated
+      recentCount
     }
   }
 `;

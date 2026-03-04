@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, ListTodo, Radio } from "lucide-react";
+import { Activity, HeartPulse, ListTodo, Radio } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -13,6 +13,7 @@ const nav = [
   { href: "/streams", icon: Radio, label: "Streams" },
   { href: "/tasks", icon: ListTodo, label: "Tasks" },
   { href: "/activity", icon: Activity, label: "Activity" },
+  { href: "/health", icon: HeartPulse, label: "Health" },
 ] as const;
 
 export function Sidebar() {
