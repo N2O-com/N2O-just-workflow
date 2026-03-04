@@ -32,6 +32,10 @@ export function getChats(): ChatEntry[] {
   );
 }
 
+export function getChat(id: string): ChatEntry | undefined {
+  return readChats().find((c) => c.id === id);
+}
+
 export function createChat(): ChatEntry {
   const chat: ChatEntry = {
     id: generateId(),

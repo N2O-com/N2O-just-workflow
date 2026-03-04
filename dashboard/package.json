@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@apollo/client": "^4.1.6",
     "@assistant-ui/react": "^0.12.15",
+    "@assistant-ui/react-markdown": "^0.12.5",
     "@supabase/supabase-js": "^2.98.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -22,6 +23,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.7.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {

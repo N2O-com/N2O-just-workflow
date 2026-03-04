@@ -1,5 +1,6 @@
 // Root layout: Apollo provider, tooltip provider, Geist fonts, and sidebar Shell wrapper.
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApolloWrapper } from "@/lib/apollo-wrapper";
@@ -33,7 +34,9 @@ export default function RootLayout({
       >
         <ApolloWrapper>
           <TooltipProvider>
-            <Shell>{children}</Shell>
+            <Suspense>
+              <Shell>{children}</Shell>
+            </Suspense>
           </TooltipProvider>
         </ApolloWrapper>
       </body>

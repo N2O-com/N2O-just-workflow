@@ -29,12 +29,19 @@ export async function executeQuery(
     body: JSON.stringify({ query, variables }),
   });
 
+  // Parse body even on non-200 — Apollo Server returns detailed errors in the body
+  const body = await res.json().catch(() => null);
+
   if (!res.ok) {
+    // Try to extract GraphQL-level errors from the response body
+    if (body?.errors?.length) {
+      return { data: null, errors: body.errors };
+    }
     return {
       data: null,
       errors: [{ message: `GraphQL request failed: ${res.status} ${res.statusText}` }],
     };
   }
 
-  return res.json();
+  return body ?? { data: null };
 }

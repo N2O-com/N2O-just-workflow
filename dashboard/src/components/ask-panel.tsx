@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   X,
   Maximize2,
@@ -11,17 +11,21 @@ import {
 import {
   AssistantRuntimeProvider,
   useLocalRuntime,
+  useThread,
   ThreadPrimitive,
   ComposerPrimitive,
   MessagePrimitive,
-  useMessagePartText,
 } from "@assistant-ui/react";
+import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { askAdapter } from "@/lib/ask/chat-adapter";
 import { useQueryOntologyToolUI } from "@/components/ask-tool-ui";
 import { useGenerateChartToolUI } from "@/components/ask-chart-ui";
 import {
   getChats,
+  getChat,
   createChat,
+  updateChat,
+  titleFromMessage,
   type ChatEntry,
 } from "@/lib/ask/chat-store";
 
@@ -31,16 +35,64 @@ function ToolRegistration() {
   return null;
 }
 
-function TextPart() {
-  const { text } = useMessagePartText();
-  return <span>{text}</span>;
+/** Persist chat messages to localStorage whenever the thread updates.
+ *  Lazily creates the chat entry on the first real message. */
+function ChatPersistence({
+  chatId,
+  onChatCreated,
+}: {
+  chatId: string | null;
+  onChatCreated: (id: string) => void;
+}) {
+  const thread = useThread();
+  const createdRef = useRef<string | null>(chatId);
+
+  // Keep ref in sync when chatId prop changes (e.g. selecting a past chat)
+  useEffect(() => {
+    createdRef.current = chatId;
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!thread.messages || thread.messages.length === 0) return;
+    if (thread.isRunning) return;
+
+    const messages = thread.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content:
+          m.content
+            ?.filter(
+              (p: { type: string }) => p.type === "text"
+            )
+            .map((p: { type: string; text?: string }) => p.text ?? "")
+            .join("") ?? "",
+      }))
+      .filter((m) => m.content.length > 0);
+
+    if (messages.length === 0) return;
+
+    // Lazily create the chat entry on first message
+    let id = createdRef.current;
+    if (!id) {
+      const chat = createChat();
+      id = chat.id;
+      createdRef.current = id;
+      onChatCreated(id);
+    }
+
+    const title = titleFromMessage(messages[0].content);
+    updateChat(id, { title, messages });
+  }, [thread.messages, thread.isRunning, onChatCreated]);
+
+  return null;
 }
 
 function UserMessage() {
   return (
     <div className="flex justify-end mb-3">
       <div className="max-w-[85%] rounded-md bg-primary/15 px-3 py-2 text-sm text-foreground">
-        <MessagePrimitive.Content components={{ Text: TextPart }} />
+        <MessagePrimitive.Content components={{ Text: MarkdownText }} />
       </div>
     </div>
   );
@@ -50,7 +102,7 @@ function AssistantMessage() {
   return (
     <div className="mb-3">
       <div className="max-w-[85%] rounded-md px-3 py-2 text-sm text-foreground/90">
-        <MessagePrimitive.Content components={{ Text: TextPart }} />
+        <MessagePrimitive.Content components={{ Text: MarkdownText }} />
       </div>
     </div>
   );
@@ -59,8 +111,8 @@ function AssistantMessage() {
 /** Thread used in sidebar panel mode (compact) */
 function AskThread() {
   return (
-    <ThreadPrimitive.Root className="flex flex-col h-full">
-      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto px-3 py-4">
+    <ThreadPrimitive.Root className="flex flex-col h-full min-h-0">
+      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto px-3 py-4 min-h-0">
         <ThreadPrimitive.Empty>
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm gap-2">
             <p>What would you like to know?</p>
@@ -76,7 +128,7 @@ function AskThread() {
           components={{ UserMessage, AssistantMessage }}
         />
       </ThreadPrimitive.Viewport>
-      <div className="border-t border-border p-3">
+      <div className="border-t border-border p-3 flex-shrink-0">
         <ComposerPrimitive.Root className="flex items-end gap-2">
           <ComposerPrimitive.Input
             placeholder="Ask a question..."
@@ -95,8 +147,8 @@ function AskThread() {
 /** Thread used in fullscreen page mode (centered, wider) */
 function FullscreenThread() {
   return (
-    <ThreadPrimitive.Root className="flex flex-col h-full">
-      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto">
+    <ThreadPrimitive.Root className="flex flex-col h-full min-h-0">
+      <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto min-h-0">
         <div className="mx-auto max-w-2xl px-4 py-8">
           <ThreadPrimitive.Empty>
             <div className="flex flex-col items-center justify-center pt-32 text-muted-foreground gap-4">
@@ -124,7 +176,7 @@ function FullscreenThread() {
           />
         </div>
       </ThreadPrimitive.Viewport>
-      <div className="border-t border-border">
+      <div className="border-t border-border flex-shrink-0">
         <div className="mx-auto max-w-2xl px-4 py-3">
           <ComposerPrimitive.Root className="flex items-end gap-2">
             <ComposerPrimitive.Input
@@ -236,12 +288,14 @@ function PastChatsDropdown({
 function PanelHeader({
   onClose,
   onNewChat,
+  onSelectChat,
   onFullscreen,
   onMinimize,
   isFullscreen,
 }: {
   onClose: () => void;
   onNewChat: () => void;
+  onSelectChat: (chat: ChatEntry) => void;
   onFullscreen: () => void;
   onMinimize: () => void;
   isFullscreen: boolean;
@@ -249,14 +303,14 @@ function PanelHeader({
   const [showHistory, setShowHistory] = useState(false);
 
   const handleSelectChat = useCallback(
-    (_chat: ChatEntry) => {
-      onNewChat();
+    (chat: ChatEntry) => {
+      onSelectChat(chat);
     },
-    [onNewChat]
+    [onSelectChat]
   );
 
   return (
-    <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+    <div className="flex items-center justify-between border-b border-border px-3 py-2.5 flex-shrink-0">
       <div className="relative">
         <button
           onClick={() => setShowHistory((o) => !o)}
@@ -309,39 +363,75 @@ function PanelHeader({
   );
 }
 
-// ── Sidebar Panel (right-side overlay) ───────────────
+// ── Ask Content (used by Shell in both panel and fullscreen modes) ────
 
-function AskPanelContent({
+export function AskContent({
+  mode,
   onClose,
+  onNewChat,
+  onSelectChat,
   onFullscreen,
+  onMinimize,
 }: {
+  mode: "panel" | "fullscreen";
   onClose: () => void;
+  onNewChat: () => void;
+  onSelectChat: (chat: ChatEntry) => void;
   onFullscreen: () => void;
+  onMinimize: () => void;
 }) {
-  const [chatKey, setChatKey] = useState(0);
-  const runtime = useLocalRuntime(askAdapter);
-
-  const handleNewChat = useCallback(() => {
-    createChat();
-    setChatKey((k) => k + 1);
-  }, []);
+  const isFullscreen = mode === "fullscreen";
 
   return (
-    <AssistantRuntimeProvider key={chatKey} runtime={runtime}>
+    <div
+      className={`flex h-full w-full flex-col bg-background min-h-0 ${
+        !isFullscreen ? "border-l border-border" : ""
+      }`}
+    >
+      <PanelHeader
+        onClose={onClose}
+        onNewChat={onNewChat}
+        onSelectChat={onSelectChat}
+        onFullscreen={onFullscreen}
+        onMinimize={onMinimize}
+        isFullscreen={isFullscreen}
+      />
+      {isFullscreen ? <FullscreenThread /> : <AskThread />}
+    </div>
+  );
+}
+
+// ── Runtime Provider (wraps content, owned by Shell) ─────────────────
+
+export function AskRuntimeProvider({
+  chatId,
+  children,
+}: {
+  chatId: string | null;
+  children: React.ReactNode;
+}) {
+  const initialMessages = useMemo(() => {
+    if (!chatId) return undefined;
+    const chat = getChat(chatId);
+    if (!chat || chat.messages.length === 0) return undefined;
+    return chat.messages.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+  }, [chatId]);
+
+  const runtime = useLocalRuntime(askAdapter, { initialMessages });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
       <ToolRegistration />
-      <div className="flex h-screen w-full flex-col border-l border-border bg-background">
-        <PanelHeader
-          onClose={onClose}
-          onNewChat={handleNewChat}
-          onFullscreen={onFullscreen}
-          onMinimize={onClose} // minimize in panel mode just closes
-          isFullscreen={false}
-        />
-        <AskThread />
-      </div>
+      <ChatPersistence chatId={chatId} />
+      {children}
     </AssistantRuntimeProvider>
   );
 }
+
+// ── Legacy exports for backward compat (not used by new Shell) ───────
 
 export function AskPanel({
   open,
@@ -353,10 +443,19 @@ export function AskPanel({
   onFullscreen: () => void;
 }) {
   if (!open) return null;
-  return <AskPanelContent onClose={onClose} onFullscreen={onFullscreen} />;
+  return (
+    <AskRuntimeProvider chatId={null}>
+      <AskContent
+        mode="panel"
+        onClose={onClose}
+        onNewChat={() => {}}
+        onSelectChat={() => {}}
+        onFullscreen={onFullscreen}
+        onMinimize={onClose}
+      />
+    </AskRuntimeProvider>
+  );
 }
-
-// ── Fullscreen Page Content ──────────────────────────
 
 export function AskFullscreenPage({
   onClose,
@@ -365,27 +464,16 @@ export function AskFullscreenPage({
   onClose: () => void;
   onMinimize: () => void;
 }) {
-  const [chatKey, setChatKey] = useState(0);
-  const runtime = useLocalRuntime(askAdapter);
-
-  const handleNewChat = useCallback(() => {
-    createChat();
-    setChatKey((k) => k + 1);
-  }, []);
-
   return (
-    <AssistantRuntimeProvider key={chatKey} runtime={runtime}>
-      <ToolRegistration />
-      <div className="flex h-screen w-full flex-col bg-background">
-        <PanelHeader
-          onClose={onClose}
-          onNewChat={handleNewChat}
-          onFullscreen={() => {}} // already fullscreen
-          onMinimize={onMinimize}
-          isFullscreen={true}
-        />
-        <FullscreenThread />
-      </div>
-    </AssistantRuntimeProvider>
+    <AskRuntimeProvider chatId={null}>
+      <AskContent
+        mode="fullscreen"
+        onClose={onClose}
+        onNewChat={() => {}}
+        onSelectChat={() => {}}
+        onFullscreen={() => {}}
+        onMinimize={onMinimize}
+      />
+    </AskRuntimeProvider>
   );
 }
