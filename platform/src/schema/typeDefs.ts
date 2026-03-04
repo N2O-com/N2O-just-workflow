@@ -42,7 +42,7 @@ export const typeDefs = `#graphql
     # ── Analytics ──────────────────────────────────────────────
 
     """Skill/tool usage frequency: invocation counts and session counts per tool"""
-    skillUsage: [SkillUsage!]!
+    skillUsage(dateFrom: String, dateTo: String): [SkillUsage!]!
 
     """Token consumption per skill per sprint: input/output tokens and cost proxy"""
     skillTokenUsage(sprint: String): [SkillTokenUsage!]!
@@ -75,7 +75,7 @@ export const typeDefs = `#graphql
     blowUpFactors(sprint: String): [BlowUpFactor!]!
 
     """Estimation accuracy per developer: avg estimated vs actual hours and error"""
-    estimationAccuracy(owner: String): [EstimationAccuracy!]!
+    estimationAccuracy(owner: String, dateFrom: String, dateTo: String): [EstimationAccuracy!]!
 
     """Estimation accuracy grouped by task type (database, frontend, infra, etc.)"""
     estimationAccuracyByType: [EstimationAccuracyByType!]!
@@ -84,16 +84,16 @@ export const typeDefs = `#graphql
     estimationAccuracyByComplexity: [EstimationAccuracyByComplexity!]!
 
     """Developer quality metrics: reversions per task, A-grade testing percentage"""
-    developerQuality(owner: String): [DeveloperQuality!]!
+    developerQuality(owner: String, dateFrom: String, dateTo: String): [DeveloperQuality!]!
 
     """Common audit findings per developer: fake tests, pattern violations, below-A grades"""
-    commonAuditFindings(owner: String): [AuditFindings!]!
+    commonAuditFindings(owner: String, dateFrom: String, dateTo: String): [AuditFindings!]!
 
     """Reversion hotspots by task type and complexity: where quality issues cluster"""
     reversionHotspots: [ReversionHotspot!]!
 
     """Sprint velocity: completed tasks, avg hours per task, total hours per sprint"""
-    sprintVelocity(sprint: String): [SprintVelocity!]!
+    sprintVelocity(sprint: String, dateFrom: String, dateTo: String): [SprintVelocity!]!
 
     """Session timeline for Gantt chart: session start/end, tokens, tool calls, subagents"""
     sessionTimeline(developer: String, dateFrom: String, dateTo: String): [SessionTimelineEntry!]!

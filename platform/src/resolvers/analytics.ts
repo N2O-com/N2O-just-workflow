@@ -14,10 +14,34 @@ export const analyticsResolvers = {
   Query: {
     // ── Skill Analytics ────────────────────────────────────
 
-    skillUsage: async (_: any, __: any, ctx: Context) => {
+    skillUsage: async (
+      _: any,
+      args: { dateFrom?: string; dateTo?: string },
+      ctx: Context
+    ) => {
+      const conditions: string[] = ["event_type = 'tool_call'"];
+      const params: any[] = [];
+      if (args.dateFrom) {
+        conditions.push("timestamp >= ?");
+        params.push(args.dateFrom);
+      }
+      if (args.dateTo) {
+        conditions.push("timestamp <= ?");
+        params.push(args.dateTo);
+      }
+      const { where } = whereClause(conditions, params);
       const rows = await queryAll(
         ctx.db,
-        "SELECT * FROM skill_usage ORDER BY invocations DESC"
+        `SELECT tool_name,
+            COUNT(*) as invocations,
+            COUNT(DISTINCT session_id) as sessions,
+            MIN(timestamp) as first_used,
+            MAX(timestamp) as last_used
+         FROM workflow_events
+         ${where}
+         GROUP BY tool_name
+         ORDER BY invocations DESC`,
+        params
       );
       return rows.map((row: any) => ({
         toolName: row.tool_name,
@@ -274,8 +298,8 @@ export const analyticsResolvers = {
         title: row.title,
         type: row.type,
         complexity: row.complexity,
-        estimatedHours: row.estimated_hours ? parseFloat(row.estimated_hours) : null,
-        actualHours: row.actual_hours ? parseFloat(row.actual_hours) : null,
+        estimatedMinutes: row.estimated_minutes ? parseFloat(row.estimated_minutes) : null,
+        actualMinutes: row.actual_minutes ? parseFloat(row.actual_minutes) : null,
         blowUpRatio: row.blow_up_ratio ? parseFloat(row.blow_up_ratio) : null,
         reversions: row.reversions,
         testingPosture: row.testing_posture,
@@ -286,19 +310,47 @@ export const analyticsResolvers = {
 
     estimationAccuracy: async (
       _: any,
-      args: { owner?: string },
+      args: { owner?: string; dateFrom?: string; dateTo?: string },
       ctx: Context
     ) => {
-      const conditions: string[] = [];
+      const conditions: string[] = [
+        "started_at IS NOT NULL",
+        "completed_at IS NOT NULL",
+        "estimated_minutes IS NOT NULL",
+        "owner IS NOT NULL",
+      ];
       const params: any[] = [];
       if (args.owner) {
         conditions.push("owner = ?");
         params.push(args.owner);
       }
+      if (args.dateFrom) {
+        conditions.push("completed_at >= ?");
+        params.push(args.dateFrom);
+      }
+      if (args.dateTo) {
+        conditions.push("completed_at <= ?");
+        params.push(args.dateTo);
+      }
       const { where } = whereClause(conditions, params);
       const rows = await queryAll(
         ctx.db,
-        `SELECT * FROM estimation_accuracy ${where} ORDER BY owner`,
+        `SELECT
+            owner,
+            COUNT(*) as tasks_with_estimates,
+            ROUND(AVG(estimated_minutes), 1) as avg_estimated,
+            ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440), 1) as avg_actual,
+            ROUND(
+                AVG((julianday(completed_at) - julianday(started_at)) * 1440) /
+                NULLIF(AVG(estimated_minutes), 0),
+            2) as blow_up_ratio,
+            ROUND(AVG(ABS(
+                (julianday(completed_at) - julianday(started_at)) * 1440 - estimated_minutes
+            )), 1) as avg_error_minutes
+         FROM tasks
+         ${where}
+         GROUP BY owner
+         ORDER BY owner`,
         params
       );
       return rows.map((row: any) => ({
@@ -307,7 +359,7 @@ export const analyticsResolvers = {
         avgEstimated: row.avg_estimated ? parseFloat(row.avg_estimated) : null,
         avgActual: row.avg_actual ? parseFloat(row.avg_actual) : null,
         blowUpRatio: row.blow_up_ratio ? parseFloat(row.blow_up_ratio) : null,
-        avgErrorHours: row.avg_error_hours ? parseFloat(row.avg_error_hours) : null,
+        avgErrorMinutes: row.avg_error_minutes ? parseFloat(row.avg_error_minutes) : null,
       }));
     },
 
@@ -343,19 +395,37 @@ export const analyticsResolvers = {
 
     developerQuality: async (
       _: any,
-      args: { owner?: string },
+      args: { owner?: string; dateFrom?: string; dateTo?: string },
       ctx: Context
     ) => {
-      const conditions: string[] = [];
+      const conditions: string[] = ["owner IS NOT NULL", "status = 'green'"];
       const params: any[] = [];
       if (args.owner) {
         conditions.push("owner = ?");
         params.push(args.owner);
       }
+      if (args.dateFrom) {
+        conditions.push("completed_at >= ?");
+        params.push(args.dateFrom);
+      }
+      if (args.dateTo) {
+        conditions.push("completed_at <= ?");
+        params.push(args.dateTo);
+      }
       const { where } = whereClause(conditions, params);
       const rows = await queryAll(
         ctx.db,
-        `SELECT * FROM developer_quality ${where} ORDER BY owner`,
+        `SELECT
+            owner,
+            COUNT(*) as total_tasks,
+            SUM(reversions) as total_reversions,
+            ROUND(1.0 * SUM(reversions) / COUNT(*), 2) as reversions_per_task,
+            SUM(CASE WHEN testing_posture = 'A' THEN 1 ELSE 0 END) as a_grades,
+            ROUND(100.0 * SUM(CASE WHEN testing_posture = 'A' THEN 1 ELSE 0 END) / COUNT(*), 1) as a_grade_pct
+         FROM tasks
+         ${where}
+         GROUP BY owner
+         ORDER BY owner`,
         params
       );
       return rows.map((row: any) => ({
@@ -370,19 +440,36 @@ export const analyticsResolvers = {
 
     commonAuditFindings: async (
       _: any,
-      args: { owner?: string },
+      args: { owner?: string; dateFrom?: string; dateTo?: string },
       ctx: Context
     ) => {
-      const conditions: string[] = [];
+      const conditions: string[] = ["pattern_audited = 1", "owner IS NOT NULL"];
       const params: any[] = [];
       if (args.owner) {
         conditions.push("owner = ?");
         params.push(args.owner);
       }
+      if (args.dateFrom) {
+        conditions.push("completed_at >= ?");
+        params.push(args.dateFrom);
+      }
+      if (args.dateTo) {
+        conditions.push("completed_at <= ?");
+        params.push(args.dateTo);
+      }
       const { where } = whereClause(conditions, params);
       const rows = await queryAll(
         ctx.db,
-        `SELECT * FROM common_audit_findings ${where} ORDER BY owner`,
+        `SELECT owner,
+            SUM(CASE WHEN pattern_audit_notes LIKE '%fake test%' THEN 1 ELSE 0 END) as fake_test_incidents,
+            SUM(CASE WHEN pattern_audit_notes LIKE '%violation%' THEN 1 ELSE 0 END) as pattern_violations,
+            SUM(CASE WHEN testing_posture != 'A' THEN 1 ELSE 0 END) as below_a_grade,
+            SUM(reversions) as total_reversions,
+            COUNT(*) as total_tasks
+         FROM tasks
+         ${where}
+         GROUP BY owner
+         ORDER BY owner`,
         params
       );
       return rows.map((row: any) => ({
@@ -414,26 +501,45 @@ export const analyticsResolvers = {
 
     sprintVelocity: async (
       _: any,
-      args: { sprint?: string },
+      args: { sprint?: string; dateFrom?: string; dateTo?: string },
       ctx: Context
     ) => {
-      const conditions: string[] = [];
+      const conditions: string[] = [
+        "started_at IS NOT NULL",
+        "completed_at IS NOT NULL",
+      ];
       const params: any[] = [];
       if (args.sprint) {
         conditions.push("sprint = ?");
         params.push(args.sprint);
       }
+      if (args.dateFrom) {
+        conditions.push("completed_at >= ?");
+        params.push(args.dateFrom);
+      }
+      if (args.dateTo) {
+        conditions.push("completed_at <= ?");
+        params.push(args.dateTo);
+      }
       const { where } = whereClause(conditions, params);
       const rows = await queryAll(
         ctx.db,
-        `SELECT * FROM sprint_velocity ${where} ORDER BY sprint`,
+        `SELECT
+            sprint,
+            COUNT(*) as completed_tasks,
+            ROUND(AVG((julianday(completed_at) - julianday(started_at)) * 1440), 1) as avg_minutes_per_task,
+            ROUND(SUM((julianday(completed_at) - julianday(started_at)) * 1440), 1) as total_minutes
+         FROM tasks
+         ${where}
+         GROUP BY sprint
+         ORDER BY sprint`,
         params
       );
       return rows.map((row: any) => ({
         sprint: row.sprint,
         completedTasks: parseInt(row.completed_tasks),
-        avgHoursPerTask: row.avg_hours_per_task ? parseFloat(row.avg_hours_per_task) : null,
-        totalHours: row.total_hours ? parseFloat(row.total_hours) : null,
+        avgMinutesPerTask: row.avg_minutes_per_task ? parseFloat(row.avg_minutes_per_task) : null,
+        totalMinutes: row.total_minutes ? parseFloat(row.total_minutes) : null,
       }));
     },
 

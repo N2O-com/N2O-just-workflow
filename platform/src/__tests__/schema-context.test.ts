@@ -96,8 +96,8 @@ describe("buildSchemaContext", () => {
   it("formats required parameters with ! suffix and optional without", () => {
     // task has required params
     expect(context).toMatch(/task\(sprint: String!, taskNum: Int!\)/);
-    // developerQuality has optional param
-    expect(context).toMatch(/developerQuality\(owner: String\)/);
+    // developerQuality has optional params
+    expect(context).toMatch(/developerQuality\(owner: String, dateFrom: String, dateTo: String\)/);
   });
 
   it("formats return types correctly for scalars, lists, and non-null", () => {
