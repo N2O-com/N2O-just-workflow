@@ -11,9 +11,11 @@ import {
 } from "@assistant-ui/react";
 import { askAdapter } from "@/lib/ask/chat-adapter";
 import { useQueryOntologyToolUI } from "@/components/ask-tool-ui";
+import { useGenerateChartToolUI } from "@/components/ask-chart-ui";
 
 function ToolRegistration() {
   useQueryOntologyToolUI();
+  useGenerateChartToolUI();
   return null;
 }
 

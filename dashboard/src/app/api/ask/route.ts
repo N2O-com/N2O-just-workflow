@@ -4,7 +4,7 @@ import { executeQuery } from "@/lib/ask/execute-query";
 
 const anthropic = new Anthropic();
 
-const TOOL_DEFINITION: Anthropic.Tool = {
+const QUERY_TOOL: Anthropic.Tool = {
   name: "query_ontology",
   description:
     "Execute a GraphQL query against the N2O data platform API to retrieve developer activity, sprint progress, velocity, quality metrics, and more.",
@@ -21,6 +21,48 @@ const TOOL_DEFINITION: Anthropic.Tool = {
       },
     },
     required: ["query"],
+  },
+};
+
+const CHART_TOOL: Anthropic.Tool = {
+  name: "generate_chart",
+  description:
+    "Generate a data visualization chart. Use after querying data with query_ontology to present results visually. Choose the chart type based on the data: line for trends over time, bar for comparisons, pie for proportions.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      type: {
+        type: "string",
+        enum: ["bar", "line", "pie"],
+        description: "Chart type: bar for comparisons, line for trends, pie for proportions",
+      },
+      title: {
+        type: "string",
+        description: "Chart title displayed above the visualization",
+      },
+      data: {
+        type: "array",
+        items: { type: "object" },
+        description: "Array of data objects to plot",
+      },
+      xKey: {
+        type: "string",
+        description: "Key in data objects for x-axis labels",
+      },
+      yKey: {
+        description: "Key(s) in data objects for y-axis values. String for single series, array for multiple.",
+        oneOf: [
+          { type: "string" },
+          { type: "array", items: { type: "string" } },
+        ],
+      },
+      colors: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional hex color array for series. Defaults to Palantir theme colors.",
+      },
+    },
+    required: ["type", "title", "data", "xKey", "yKey"],
   },
 };
 
@@ -53,6 +95,8 @@ ${schemaContext}
 
 When a user asks a question about their data, use the query_ontology tool to execute a GraphQL query and get real results. Then summarize the results clearly.
 
+When results would benefit from a visual representation (trends, comparisons, proportions), use the generate_chart tool to create a chart. The chart renders inline in the chat.
+
 Be concise and direct. When relevant, suggest follow-up questions the user could ask.`;
 
   const encoder = new TextEncoder();
@@ -77,7 +121,7 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
             max_tokens: 2048,
             system: systemPrompt,
             messages,
-            tools: [TOOL_DEFINITION],
+            tools: [QUERY_TOOL, CHART_TOOL],
           });
 
           // Collect the full response for tool call handling
@@ -107,27 +151,43 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
             // Execute each tool call and add results
             const toolResults: Anthropic.ToolResultBlockParam[] = [];
             for (const toolUse of toolUseBlocks) {
-              const input = toolUse.input as {
-                query: string;
-                variables?: Record<string, unknown>;
-              };
+              if (toolUse.name === "query_ontology") {
+                const input = toolUse.input as {
+                  query: string;
+                  variables?: Record<string, unknown>;
+                };
 
-              const result = await executeQuery(input.query, input.variables);
+                const result = await executeQuery(input.query, input.variables);
 
-              // Stream tool call event to client (Option B)
-              send({
-                type: "tool_call",
-                name: toolUse.name,
-                tool_use_id: toolUse.id,
-                input: input,
-                result: result,
-              });
+                send({
+                  type: "tool_call",
+                  name: toolUse.name,
+                  tool_use_id: toolUse.id,
+                  input: input,
+                  result: result,
+                });
 
-              toolResults.push({
-                type: "tool_result",
-                tool_use_id: toolUse.id,
-                content: JSON.stringify(result),
-              });
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: toolUse.id,
+                  content: JSON.stringify(result),
+                });
+              } else if (toolUse.name === "generate_chart") {
+                // Chart tool: data comes from the LLM, render on client
+                send({
+                  type: "tool_call",
+                  name: toolUse.name,
+                  tool_use_id: toolUse.id,
+                  input: toolUse.input,
+                  result: { rendered: true },
+                });
+
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: toolUse.id,
+                  content: "Chart rendered successfully.",
+                });
+              }
             }
 
             // Add tool results to conversation
