@@ -1,66 +1,5 @@
 import { gql } from "@apollo/client/core";
 
-// ── Observatory (Home) ────────────────────────────────────
-
-export const OBSERVATORY_QUERY = gql`
-  query Observatory {
-    skillUsage {
-      toolName
-      invocations
-      sessions
-    }
-    phaseTimingDistribution {
-      sprint
-      taskNum
-      phase
-      seconds
-      pctOfTotal
-    }
-    blowUpFactors {
-      sprint
-      taskNum
-      title
-      type
-      blowUpRatio
-      reversions
-    }
-    commonAuditFindings {
-      owner
-      fakeTestIncidents
-      patternViolations
-      belowAGrade
-      totalTasks
-    }
-    transcripts {
-      sessionId
-      parentSessionId
-      sprint
-      taskNum
-      totalInputTokens
-      totalOutputTokens
-      toolCallCount
-      model
-      startedAt
-      endedAt
-    }
-    tasks(status: "blocked") {
-      sprint
-      taskNum
-      title
-      blockedReason
-    }
-    sprints(status: "active") {
-      name
-      progress {
-        totalTasks
-        green
-        blocked
-        percentComplete
-      }
-    }
-  }
-`;
-
 // ── Velocity ──────────────────────────────────────────────
 
 export const VELOCITY_QUERY = gql`
@@ -90,8 +29,8 @@ export const VELOCITY_QUERY = gql`
       title
       type
       complexity
-      estimatedHours
-      actualHours
+      estimatedMinutes
+      actualMinutes
       blowUpRatio
       reversions
       testingPosture
@@ -282,25 +221,6 @@ export const TASKS_BOARD_QUERY = gql`
   }
 `;
 
-// ── Activity Feed ────────────────────────────────────────
-
-export const ACTIVITY_FEED_QUERY = gql`
-  query ActivityFeed {
-    activityLog(limit: 1000) {
-      id
-      timestamp
-      developer
-      action
-      sprint
-      taskNum
-      summary
-      metadata
-      sessionId
-      taskTitle
-    }
-  }
-`;
-
 // ── Conversation Feed ────────────────────────────────────
 
 export const CONVERSATION_FEED_QUERY = gql`
@@ -332,64 +252,14 @@ export const CONVERSATION_FEED_QUERY = gql`
 export const DATA_HEALTH_QUERY = gql`
   query DataHealth {
     dataHealth {
-      stream
-      count
-      lastUpdated
-      recentCount
-    }
-  }
-`;
-
-// ── Activity Insights ────────────────────────────────────
-
-export const ACTIVITY_INSIGHTS_QUERY = gql`
-  query ActivityInsights {
-    sessionTimeline {
-      sessionId
-      developer
-      sprint
-      taskNum
-      taskTitle
-      skillName
-      startedAt
-      endedAt
-      durationMinutes
-      totalInputTokens
-      totalOutputTokens
-      toolCallCount
-      messageCount
-      model
-      subagents {
-        sessionId
-        startedAt
-        endedAt
-        durationMinutes
-        totalInputTokens
-        totalOutputTokens
-        toolCallCount
-        model
+      lastSessionEndedAt
+      streams {
+        stream
+        count
+        lastUpdated
+        recentCount
       }
     }
-    developerQuality {
-      owner
-      totalTasks
-      totalReversions
-      reversionsPerTask
-      aGrades
-      aGradePct
-    }
-    commonAuditFindings {
-      owner
-      fakeTestIncidents
-      patternViolations
-      belowAGrade
-      totalReversions
-      totalTasks
-    }
-    skillUsage {
-      toolName
-      invocations
-      sessions
-    }
   }
 `;
+

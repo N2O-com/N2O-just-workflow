@@ -2,7 +2,6 @@ import Database from "better-sqlite3";
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { createLoaders, type Loaders } from "../loaders.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -78,16 +77,16 @@ export function seedTestData(db: Database.Database) {
 
   // Tasks
   db.prepare(
-    `INSERT INTO tasks (sprint, task_num, title, description, done_when, status, type, owner, estimated_hours, complexity, priority, horizon, started_at, completed_at)
-     VALUES ('test-sprint', 1, 'Set up database', 'Create tables', 'Tables exist', 'green', 'database', 'alice', 2.0, 'medium', 1.0, 'active', '2026-02-22T09:00:00', '2026-02-22T11:30:00')`
+    `INSERT INTO tasks (sprint, task_num, title, description, done_when, status, type, owner, estimated_minutes, complexity, priority, horizon, started_at, completed_at)
+     VALUES ('test-sprint', 1, 'Set up database', 'Create tables', 'Tables exist', 'green', 'database', 'alice', 120, 'medium', 1.0, 'active', '2026-02-22T09:00:00', '2026-02-22T11:30:00')`
   ).run();
   db.prepare(
-    `INSERT INTO tasks (sprint, task_num, title, description, done_when, status, type, owner, estimated_hours, complexity, priority, horizon, started_at)
-     VALUES ('test-sprint', 2, 'Build API', 'GraphQL API', 'Queries work', 'red', 'actions', 'alice', 4.0, 'high', 2.0, 'active', '2026-02-22T12:00:00')`
+    `INSERT INTO tasks (sprint, task_num, title, description, done_when, status, type, owner, estimated_minutes, complexity, priority, horizon, started_at)
+     VALUES ('test-sprint', 2, 'Build API', 'GraphQL API', 'Queries work', 'red', 'actions', 'alice', 240, 'high', 2.0, 'active', '2026-02-22T12:00:00')`
   ).run();
   db.prepare(
-    `INSERT INTO tasks (sprint, task_num, title, description, done_when, status, type, estimated_hours, priority, horizon)
-     VALUES ('test-sprint', 3, 'Frontend components', 'React UI', 'Components render', 'pending', 'frontend', 3.0, 3.0, 'active')`
+    `INSERT INTO tasks (sprint, task_num, title, description, done_when, status, type, estimated_minutes, priority, horizon)
+     VALUES ('test-sprint', 3, 'Frontend components', 'React UI', 'Components render', 'pending', 'frontend', 180, 3.0, 'active')`
   ).run();
   db.prepare(
     `INSERT INTO tasks (sprint, task_num, title, status, type, priority, horizon, blocked_reason)
@@ -121,18 +120,6 @@ export function seedTestData(db: Database.Database) {
     `INSERT INTO activity_log (developer, action, sprint, task_num, summary)
      VALUES ('alice', 'task_completed', 'test-sprint', 1, 'Alice completed test-sprint #1')`
   ).run();
-}
-
-export interface TestContext {
-  db: Database.Database;
-  loaders: Loaders;
-}
-
-export function createTestContext(db: Database.Database): TestContext {
-  return {
-    db,
-    loaders: createLoaders(db),
-  };
 }
 
 /**
