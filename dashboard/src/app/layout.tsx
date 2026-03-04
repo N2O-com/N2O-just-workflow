@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApolloWrapper } from "@/lib/apollo-wrapper";
-import { Sidebar } from "@/components/layout/sidebar";
+import { Shell } from "@/components/layout/shell";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -32,12 +32,7 @@ export default function RootLayout({
       >
         <ApolloWrapper>
           <TooltipProvider>
-            <div className="flex h-screen overflow-hidden">
-              <Sidebar />
-              <main className="flex-1 overflow-y-auto p-4">
-                {children}
-              </main>
-            </div>
+            <Shell>{children}</Shell>
           </TooltipProvider>
         </ApolloWrapper>
       </body>

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, HeartPulse, ListTodo, Radio } from "lucide-react";
+import { Activity, HeartPulse, ListTodo, Radio, Sparkles } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -16,7 +16,7 @@ const nav = [
   { href: "/health", icon: HeartPulse, label: "Health" },
 ] as const;
 
-export function Sidebar() {
+export function Sidebar({ onAskToggle }: { onAskToggle?: () => void }) {
   const pathname = usePathname();
 
   return (
@@ -44,6 +44,21 @@ export function Sidebar() {
           </Tooltip>
         );
       })}
+      <div className="mt-auto">
+        <Tooltip delayDuration={0}>
+          <TooltipTrigger asChild>
+            <button
+              onClick={onAskToggle}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <Sparkles size={18} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            Ask N2O
+          </TooltipContent>
+        </Tooltip>
+      </div>
     </aside>
   );
 }
