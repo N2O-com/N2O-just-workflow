@@ -10,6 +10,12 @@ import {
   useMessagePartText,
 } from "@assistant-ui/react";
 import { askAdapter } from "@/lib/ask/chat-adapter";
+import { useQueryOntologyToolUI } from "@/components/ask-tool-ui";
+
+function ToolRegistration() {
+  useQueryOntologyToolUI();
+  return null;
+}
 
 function TextPart() {
   const { text } = useMessagePartText();
@@ -83,6 +89,7 @@ function AskPanelContent({ onClose }: { onClose: () => void }) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <ToolRegistration />
       <div className="flex h-screen w-[350px] flex-col border-l border-border bg-background">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-medium text-foreground">Ask N2O</h2>
