@@ -34,7 +34,8 @@ const CHART_TOOL: Anthropic.Tool = {
       type: {
         type: "string",
         enum: ["bar", "line", "pie"],
-        description: "Chart type: bar for comparisons, line for trends, pie for proportions",
+        description:
+          "Chart type: bar for comparisons, line for trends, pie for proportions",
       },
       title: {
         type: "string",
@@ -50,7 +51,8 @@ const CHART_TOOL: Anthropic.Tool = {
         description: "Key in data objects for x-axis labels",
       },
       yKey: {
-        description: "Key(s) in data objects for y-axis values. String for single series, array for multiple.",
+        description:
+          "Key(s) in data objects for y-axis values. String for single series, array for multiple.",
         oneOf: [
           { type: "string" },
           { type: "array", items: { type: "string" } },
@@ -59,7 +61,8 @@ const CHART_TOOL: Anthropic.Tool = {
       colors: {
         type: "array",
         items: { type: "string" },
-        description: "Optional hex color array for series. Defaults to Palantir theme colors.",
+        description:
+          "Optional hex color array for series. Defaults to Palantir theme colors.",
       },
     },
     required: ["type", "title", "data", "xKey", "yKey"],
@@ -85,7 +88,15 @@ export async function POST(request: Request) {
     );
   }
 
-  const schemaContext = await getSchemaContext();
+  // Try to get schema context; fall back to a minimal prompt if platform is down
+  let schemaContext: string;
+  try {
+    schemaContext = await getSchemaContext();
+  } catch (err) {
+    schemaContext =
+      "Schema introspection failed — the data platform may be offline. " +
+      "Let the user know you cannot query data right now.";
+  }
 
   const systemPrompt = `You are an analytics assistant for the N2O workflow platform. You have access to a GraphQL API that tracks developer activity, sprint progress, velocity, and quality metrics.
 
@@ -107,15 +118,28 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
       }
 
       try {
-        // Build conversation messages
-        const messages: MessageParam[] = clientMessages.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
+        // Build conversation messages — filter out any with empty content
+        const messages: MessageParam[] = clientMessages
+          .filter((m) => m.content && m.content.trim().length > 0)
+          .map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          }));
+
+        if (messages.length === 0) {
+          send({ type: "error", error: "No valid messages provided" });
+          controller.close();
+          return;
+        }
 
         // Tool call loop: Claude may call tools multiple times
         let continueLoop = true;
-        while (continueLoop) {
+        const MAX_ITERATIONS = 5;
+        let iteration = 0;
+
+        while (continueLoop && iteration < MAX_ITERATIONS) {
+          iteration++;
+
           const stream = anthropic.messages.stream({
             model: "claude-sonnet-4-5-20250929",
             max_tokens: 2048,
@@ -123,9 +147,6 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
             messages,
             tools: [QUERY_TOOL, CHART_TOOL],
           });
-
-          // Collect the full response for tool call handling
-          const assistantBlocks: Anthropic.ContentBlock[] = [];
 
           for await (const event of stream) {
             if (
@@ -137,16 +158,17 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
           }
 
           const finalMessage = await stream.finalMessage();
-          assistantBlocks.push(...finalMessage.content);
 
           if (finalMessage.stop_reason === "tool_use") {
-            // Find tool use blocks
             const toolUseBlocks = finalMessage.content.filter(
               (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
             );
 
             // Add assistant response to conversation
-            messages.push({ role: "assistant", content: finalMessage.content });
+            messages.push({
+              role: "assistant",
+              content: finalMessage.content,
+            });
 
             // Execute each tool call and add results
             const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -157,7 +179,10 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
                   variables?: Record<string, unknown>;
                 };
 
-                const result = await executeQuery(input.query, input.variables);
+                const result = await executeQuery(
+                  input.query,
+                  input.variables
+                );
 
                 send({
                   type: "tool_call",
@@ -173,7 +198,6 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
                   content: JSON.stringify(result),
                 });
               } else if (toolUse.name === "generate_chart") {
-                // Chart tool: data comes from the LLM, render on client
                 send({
                   type: "tool_call",
                   name: toolUse.name,
@@ -192,21 +216,33 @@ Be concise and direct. When relevant, suggest follow-up questions the user could
 
             // Add tool results to conversation
             messages.push({ role: "user", content: toolResults });
-
-            // Continue loop — Claude will process tool results
           } else {
-            // No more tool calls — we're done
+            // No more tool calls — done
             continueLoop = false;
             send({ type: "done", stop_reason: finalMessage.stop_reason });
           }
         }
 
+        if (iteration >= MAX_ITERATIONS) {
+          send({
+            type: "text_delta",
+            content:
+              "\n\n(Stopped after too many tool calls. Please try a simpler question.)",
+          });
+          send({ type: "done", stop_reason: "max_iterations" });
+        }
+
         controller.close();
       } catch (error) {
+        const msg =
+          error instanceof Error ? error.message : "Unknown error";
+        send({ type: "error", error: msg });
+        // Also send as text so the user sees it in the chat
         send({
-          type: "error",
-          error: error instanceof Error ? error.message : "Unknown error",
+          type: "text_delta",
+          content: `Sorry, something went wrong: ${msg}`,
         });
+        send({ type: "done", stop_reason: "error" });
         controller.close();
       }
     },

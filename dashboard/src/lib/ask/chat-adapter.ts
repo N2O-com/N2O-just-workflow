@@ -1,5 +1,10 @@
 import type { ChatModelAdapter } from "@assistant-ui/react";
 
+// Use `any` for the accumulated parts array to avoid deep readonly type conflicts
+// with assistant-ui's ThreadAssistantMessagePart. The runtime validates at render time.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Part = any;
+
 export const askAdapter: ChatModelAdapter = {
   async *run({ messages, abortSignal }) {
     const response = await fetch("/api/ask", {
@@ -19,7 +24,15 @@ export const askAdapter: ChatModelAdapter = {
     });
 
     if (!response.ok) {
-      throw new Error(`Ask API error: ${response.status}`);
+      yield {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: API returned ${response.status}. Please try again.`,
+          },
+        ],
+      };
+      return;
     }
 
     const reader = response.body?.getReader();
@@ -27,6 +40,10 @@ export const askAdapter: ChatModelAdapter = {
 
     const decoder = new TextDecoder();
     let buffer = "";
+
+    // Accumulate content parts across the entire stream (including tool call loops)
+    const finalized: Part[] = [];
+    let currentText = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -38,25 +55,46 @@ export const askAdapter: ChatModelAdapter = {
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        const event = JSON.parse(line);
+
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
 
         if (event.type === "text_delta") {
-          yield { content: [{ type: "text" as const, text: event.content }] };
-        } else if (event.type === "tool_call") {
+          currentText += event.content;
           yield {
             content: [
-              {
-                type: "tool-call" as const,
-                toolCallId: event.tool_use_id,
-                toolName: event.name,
-                args: event.input,
-                argsText: JSON.stringify(event.input),
-                result: event.result,
-              },
+              ...finalized,
+              { type: "text" as const, text: currentText },
             ],
           };
+        } else if (event.type === "tool_call") {
+          if (currentText) {
+            finalized.push({ type: "text" as const, text: currentText });
+            currentText = "";
+          }
+          finalized.push({
+            type: "tool-call" as const,
+            toolCallId: event.tool_use_id as string,
+            toolName: event.name as string,
+            args: event.input as Record<string, unknown>,
+            argsText: JSON.stringify(event.input),
+            result: event.result,
+          });
+          yield { content: [...finalized] };
         }
       }
+    }
+
+    // Final yield with everything accumulated
+    if (currentText) {
+      finalized.push({ type: "text" as const, text: currentText });
+    }
+    if (finalized.length > 0) {
+      yield { content: [...finalized] };
     }
   },
 };
