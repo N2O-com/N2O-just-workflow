@@ -2,6 +2,11 @@
 
 import { useQuery } from "@apollo/client/react";
 import { DATA_HEALTH_QUERY } from "@/lib/graphql/queries";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 // ── Types ────────────────────────────────────────────────
 
@@ -50,6 +55,34 @@ const STATUS_DOT: Record<string, string> = {
   yellow: "bg-[#EC9A3C]",
   red: "bg-[#CD4246]",
 };
+
+function formatThreshold(hours: number): string {
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  return `${days}d`;
+}
+
+function statusTooltip(stream: string, lastUpdated: string | null): string {
+  const threshold = FRESHNESS[stream] ?? 24;
+  const t = formatThreshold(threshold);
+  const t2 = formatThreshold(threshold * 2);
+
+  if (!lastUpdated) {
+    return `No data — needs at least one record to turn green.\n\nGreen: updated within ${t}\nYellow: updated within ${t2}\nRed: older than ${t2} or no data`;
+  }
+
+  const parsed = new Date(lastUpdated).getTime();
+  if (isNaN(parsed)) {
+    return `Invalid timestamp.\n\nGreen: updated within ${t}\nYellow: updated within ${t2}\nRed: older than ${t2}`;
+  }
+
+  const ageHours = (Date.now() - parsed) / (1000 * 60 * 60);
+  const ageStr = ageHours < 24
+    ? `${Math.round(ageHours)}h old`
+    : `${Math.round(ageHours / 24)}d old`;
+
+  return `Currently ${ageStr}.\n\nGreen: updated within ${t}\nYellow: updated within ${t2}\nRed: older than ${t2}`;
+}
 
 function relativeTime(ts: string | null): string {
   if (!ts) return "—";
@@ -115,10 +148,18 @@ export default function HealthPage() {
                       {LABELS[s.stream] ?? s.stream}
                     </td>
                     <td className="px-4 py-2.5 text-center">
-                      <span
-                        className={`inline-block h-2.5 w-2.5 rounded-full ${STATUS_DOT[status]}`}
-                        title={status}
-                      />
+                      <Tooltip delayDuration={0}>
+                        <TooltipTrigger asChild>
+                          <span
+                            className={`inline-block h-2.5 w-2.5 rounded-full cursor-help ${STATUS_DOT[status]}`}
+                          />
+                        </TooltipTrigger>
+                        <TooltipContent side="right" sideOffset={8} className="max-w-64">
+                          <p className="whitespace-pre-line text-xs">
+                            {statusTooltip(s.stream, s.lastUpdated)}
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
                     </td>
                     <td className="px-4 py-2.5 text-right font-mono text-xs">
                       {s.count.toLocaleString()}
