@@ -23,3 +23,11 @@ export async function queryOne(
   const rows = await queryAll(pool, sql, params);
   return rows[0] ?? null;
 }
+
+export function whereClause(
+  conditions: string[],
+  params: any[]
+): { where: string; params: any[] } {
+  if (conditions.length === 0) return { where: "", params };
+  return { where: `WHERE ${conditions.join(" AND ")}`, params };
+}
