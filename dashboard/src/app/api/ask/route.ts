@@ -1,3 +1,4 @@
+// Ask API: Streaming endpoint that uses Claude to answer natural-language questions about project data.
 import Anthropic from "@anthropic-ai/sdk";
 import { getSchemaContext } from "@/lib/ask/schema-context";
 import { executeQuery } from "@/lib/ask/execute-query";

@@ -1,3 +1,4 @@
+// Resolver composition: merges domain resolver modules into the root GraphQL resolver map.
 import type { Context } from "../context.js";
 import { queryAll } from "../db-adapter.js";
 import { mapEvent, mapTranscript } from "./mappers.js";

@@ -1,3 +1,4 @@
+// Team: Developer profiles with skills, active tasks, velocity, quality grades, and audit findings.
 "use client";
 
 import { useQuery } from "@apollo/client/react";

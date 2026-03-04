@@ -1,3 +1,4 @@
+// Data Health: Status table showing row counts, freshness, and staleness for each data stream.
 "use client";
 
 import { useQuery } from "@apollo/client/react";
@@ -17,9 +18,10 @@ interface DataHealthStream {
   recentCount: number;
 }
 
-// ── Freshness thresholds (in hours) ─────────────────────
+// ── Staleness tolerance per stream (in hours) ───────────
+// How long after the last session can this stream lag before we worry?
 
-const FRESHNESS: Record<string, number> = {
+const TOLERANCE: Record<string, number> = {
   transcripts: 1,
   workflow_events: 1,
   tasks: 24,
@@ -39,14 +41,24 @@ const LABELS: Record<string, string> = {
 
 // ── Helpers ──────────────────────────────────────────────
 
-function getStatus(stream: string, lastUpdated: string | null): "green" | "yellow" | "red" {
+function getStatus(
+  stream: string,
+  lastUpdated: string | null,
+  lastSessionEndedAt: string | null
+): "green" | "yellow" | "red" | "gray" {
   if (!lastUpdated) return "red";
-  const threshold = FRESHNESS[stream] ?? 24;
-  const parsed = new Date(lastUpdated).getTime();
-  if (isNaN(parsed)) return "red";
-  const ageHours = (Date.now() - parsed) / (1000 * 60 * 60);
-  if (ageHours <= threshold) return "green";
-  if (ageHours <= threshold * 2) return "yellow";
+  if (!lastSessionEndedAt) return "gray"; // no sessions yet — can't assess
+
+  const tolerance = TOLERANCE[stream] ?? 24;
+  const updatedMs = new Date(lastUpdated).getTime();
+  const sessionMs = new Date(lastSessionEndedAt).getTime();
+  if (isNaN(updatedMs) || isNaN(sessionMs)) return "red";
+
+  // How far behind the last session is this stream?
+  const lagHours = Math.max(0, (sessionMs - updatedMs) / (1000 * 60 * 60));
+
+  if (lagHours <= tolerance) return "green";
+  if (lagHours <= tolerance * 2) return "yellow";
   return "red";
 }
 
@@ -54,6 +66,7 @@ const STATUS_DOT: Record<string, string> = {
   green: "bg-[#238551]",
   yellow: "bg-[#EC9A3C]",
   red: "bg-[#CD4246]",
+  gray: "bg-[#5F6B7C]",
 };
 
 function formatThreshold(hours: number): string {
@@ -62,26 +75,52 @@ function formatThreshold(hours: number): string {
   return `${days}d`;
 }
 
-function statusTooltip(stream: string, lastUpdated: string | null): string {
-  const threshold = FRESHNESS[stream] ?? 24;
-  const t = formatThreshold(threshold);
-  const t2 = formatThreshold(threshold * 2);
+function StatusTooltipContent({
+  stream,
+  lastUpdated,
+  lastSessionEndedAt,
+}: {
+  stream: string;
+  lastUpdated: string | null;
+  lastSessionEndedAt: string | null;
+}) {
+  const tolerance = TOLERANCE[stream] ?? 24;
+  const t = formatThreshold(tolerance);
+  const t2 = formatThreshold(tolerance * 2);
 
-  if (!lastUpdated) {
-    return `No data — needs at least one record to turn green.\n\nGreen: updated within ${t}\nYellow: updated within ${t2}\nRed: older than ${t2} or no data`;
+  if (!lastSessionEndedAt) {
+    return <p className="text-xs text-muted-foreground">No sessions recorded yet.</p>;
   }
 
-  const parsed = new Date(lastUpdated).getTime();
-  if (isNaN(parsed)) {
-    return `Invalid timestamp.\n\nGreen: updated within ${t}\nYellow: updated within ${t2}\nRed: older than ${t2}`;
+  let lagStr = "no data";
+  if (lastUpdated) {
+    const updatedMs = new Date(lastUpdated).getTime();
+    const sessionMs = new Date(lastSessionEndedAt).getTime();
+    if (!isNaN(updatedMs) && !isNaN(sessionMs)) {
+      const lagHours = Math.max(0, (sessionMs - updatedMs) / (1000 * 60 * 60));
+      lagStr = lagHours < 1
+        ? "up to date"
+        : lagHours < 24
+          ? `${Math.round(lagHours)}h behind`
+          : `${Math.round(lagHours / 24)}d behind`;
+    }
   }
 
-  const ageHours = (Date.now() - parsed) / (1000 * 60 * 60);
-  const ageStr = ageHours < 24
-    ? `${Math.round(ageHours)}h old`
-    : `${Math.round(ageHours / 24)}d old`;
-
-  return `Currently ${ageStr}.\n\nGreen: updated within ${t}\nYellow: updated within ${t2}\nRed: older than ${t2}`;
+  return (
+    <div className="space-y-1.5 text-xs">
+      <div className="grid grid-cols-[auto_1fr] gap-x-3">
+        <span className="text-muted-foreground">Lag</span>
+        <span>{lagStr}</span>
+        <span className="text-muted-foreground">Threshold</span>
+        <span>{t} / {t2} / {t2}+</span>
+      </div>
+      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1"><span className="inline-block h-1.5 w-1.5 rounded-full bg-[#238551]" />≤{t}</span>
+        <span className="flex items-center gap-1"><span className="inline-block h-1.5 w-1.5 rounded-full bg-[#EC9A3C]" />≤{t2}</span>
+        <span className="flex items-center gap-1"><span className="inline-block h-1.5 w-1.5 rounded-full bg-[#CD4246]" />&gt;{t2}</span>
+      </div>
+    </div>
+  );
 }
 
 function relativeTime(ts: string | null): string {
@@ -103,7 +142,8 @@ export default function HealthPage() {
     pollInterval: 30000,
   });
 
-  const streams: DataHealthStream[] = data?.dataHealth ?? [];
+  const streams: DataHealthStream[] = data?.dataHealth?.streams ?? [];
+  const lastSessionEndedAt: string | null = data?.dataHealth?.lastSessionEndedAt ?? null;
 
   return (
     <div className="space-y-4">
@@ -116,6 +156,12 @@ export default function HealthPage() {
           </span>
         )}
       </div>
+
+      {lastSessionEndedAt && (
+        <div className="text-xs text-muted-foreground">
+          Last session ended {relativeTime(lastSessionEndedAt)}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-[#CD4246]/30 bg-[#CD4246]/10 p-3 text-sm text-[#CD4246]">
@@ -133,15 +179,51 @@ export default function HealthPage() {
             <thead>
               <tr className="border-b border-border bg-card">
                 <th className="px-4 py-2 text-left font-medium text-muted-foreground">Stream</th>
-                <th className="px-4 py-2 text-center font-medium text-muted-foreground w-20">Status</th>
-                <th className="px-4 py-2 text-right font-medium text-muted-foreground w-24">Count</th>
-                <th className="px-4 py-2 text-right font-medium text-muted-foreground w-32">Last Updated</th>
-                <th className="px-4 py-2 text-right font-medium text-muted-foreground w-24">Rate (1h)</th>
+                <th className="px-4 py-2 text-center font-medium text-muted-foreground w-20">
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help underline decoration-dotted underline-offset-4 decoration-muted-foreground/40">Status</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6} className="bg-[#1C2127] border border-border text-foreground p-2 max-w-[260px]">
+                      <p className="text-xs">Freshness relative to last session. Green = within tolerance, Yellow = within 2x, Red = beyond 2x.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </th>
+                <th className="px-4 py-2 text-right font-medium text-muted-foreground w-24">
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help underline decoration-dotted underline-offset-4 decoration-muted-foreground/40">Count</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6} className="bg-[#1C2127] border border-border text-foreground p-2 max-w-[260px]">
+                      <p className="text-xs">Total records synced to Supabase for this stream.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </th>
+                <th className="px-4 py-2 text-right font-medium text-muted-foreground w-32">
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help underline decoration-dotted underline-offset-4 decoration-muted-foreground/40">Last Updated</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6} className="bg-[#1C2127] border border-border text-foreground p-2 max-w-[260px]">
+                      <p className="text-xs">Time since the most recent record was synced.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </th>
+                <th className="px-4 py-2 text-right font-medium text-muted-foreground w-24">
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild>
+                      <span className="cursor-help underline decoration-dotted underline-offset-4 decoration-muted-foreground/40">Rate (1h)</span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" sideOffset={6} className="bg-[#1C2127] border border-border text-foreground p-2 max-w-[260px]">
+                      <p className="text-xs">Records synced in the last hour.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </th>
               </tr>
             </thead>
             <tbody>
               {streams.map((s) => {
-                const status = getStatus(s.stream, s.lastUpdated);
+                const status = getStatus(s.stream, s.lastUpdated, lastSessionEndedAt);
                 return (
                   <tr key={s.stream} className="border-b border-border last:border-0 hover:bg-card/50">
                     <td className="px-4 py-2.5 font-mono text-xs">
@@ -154,10 +236,8 @@ export default function HealthPage() {
                             className={`inline-block h-2.5 w-2.5 rounded-full cursor-help ${STATUS_DOT[status]}`}
                           />
                         </TooltipTrigger>
-                        <TooltipContent side="right" sideOffset={8} className="max-w-64">
-                          <p className="whitespace-pre-line text-xs">
-                            {statusTooltip(s.stream, s.lastUpdated)}
-                          </p>
+                        <TooltipContent side="right" sideOffset={8} className="bg-[#1C2127] border border-border text-foreground p-2 max-w-[260px]">
+                          <StatusTooltipContent stream={s.stream} lastUpdated={s.lastUpdated} lastSessionEndedAt={lastSessionEndedAt} />
                         </TooltipContent>
                       </Tooltip>
                     </td>

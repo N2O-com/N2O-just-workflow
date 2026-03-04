@@ -1,3 +1,4 @@
+// Platform API server: Apollo Server 5 + Supabase Postgres, serves the N2O GraphQL schema on port 4000.
 import { ApolloServer } from "@apollo/server";
 import { startStandaloneServer } from "@apollo/server/standalone";
 import { typeDefs } from "./schema/typeDefs.js";

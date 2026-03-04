@@ -1,3 +1,4 @@
+// Task board: Gantt chart of sprint tasks with filtering, dependency lines, and detail sheet.
 "use client";
 
 import { KpiCard } from "@/components/dashboard/kpi-card";

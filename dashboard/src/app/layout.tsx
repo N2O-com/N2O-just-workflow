@@ -1,3 +1,4 @@
+// Root layout: Apollo provider, tooltip provider, Geist fonts, and sidebar Shell wrapper.
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";

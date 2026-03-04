@@ -1,3 +1,4 @@
+// Velocity: Estimation accuracy, blow-up factors, phase timing, and token efficiency tables.
 "use client";
 
 import { useQuery } from "@apollo/client/react";
@@ -211,10 +212,10 @@ export default function VelocityPage() {
                     {b.type}
                   </TableCell>
                   <TableCell className="py-1.5 text-xs font-mono" data-mono>
-                    {b.estimatedHours ? `${b.estimatedHours}h` : "—"}
+                    {b.estimatedMinutes ? `${b.estimatedMinutes}m` : "—"}
                   </TableCell>
                   <TableCell className="py-1.5 text-xs font-mono" data-mono>
-                    {b.actualHours ? `${b.actualHours}h` : "—"}
+                    {b.actualMinutes ? `${b.actualMinutes}m` : "—"}
                   </TableCell>
                   <TableCell className="py-1.5 text-xs font-mono font-bold text-[#CD4246]" data-mono>
                     {b.blowUpRatio?.toFixed(1)}x

@@ -1,3 +1,4 @@
+// Skills: Tool/skill usage, token consumption, duration, and precision tables with version comparisons.
 "use client";
 
 import { useQuery } from "@apollo/client/react";

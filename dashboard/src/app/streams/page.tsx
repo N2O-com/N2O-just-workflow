@@ -1,3 +1,4 @@
+// Streams: Gantt-style timeline of coding sessions grouped by developer, with token and concurrency KPIs.
 "use client";
 
 import { useMemo } from "react";
