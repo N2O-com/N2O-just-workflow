@@ -6,6 +6,7 @@ import {
   Activity,
   HeartPulse,
   ListTodo,
+  Network,
   Radio,
   Sparkles,
   PanelLeftOpen,
@@ -22,6 +23,7 @@ const nav = [
   { href: "/tasks", icon: ListTodo, label: "Tasks" },
   { href: "/activity", icon: Activity, label: "Activity" },
   { href: "/health", icon: HeartPulse, label: "Health" },
+  { href: "/ontology", icon: Network, label: "Ontology" },
 ] as const;
 
 export function Sidebar({
