@@ -218,6 +218,51 @@ export const TASKS_BOARD_QUERY = gql`
         taskNum
       }
     }
+    sprints {
+      name
+      projectId
+    }
+  }
+`;
+
+// ── Task Mutations ──────────────────────────────────────────
+
+export const CLAIM_TASK_MUTATION = gql`
+  mutation ClaimTask($sprint: String!, $taskNum: Int!, $developer: String!) {
+    claimTask(sprint: $sprint, taskNum: $taskNum, developer: $developer) {
+      sprint
+      taskNum
+      status
+      owner {
+        name
+      }
+    }
+  }
+`;
+
+export const UNCLAIM_TASK_MUTATION = gql`
+  mutation UnclaimTask($sprint: String!, $taskNum: Int!) {
+    unclaimTask(sprint: $sprint, taskNum: $taskNum) {
+      sprint
+      taskNum
+      status
+      owner {
+        name
+      }
+    }
+  }
+`;
+
+export const ASSIGN_TASK_MUTATION = gql`
+  mutation AssignTask($sprint: String!, $taskNum: Int!, $developer: String!) {
+    assignTask(sprint: $sprint, taskNum: $taskNum, developer: $developer) {
+      sprint
+      taskNum
+      status
+      owner {
+        name
+      }
+    }
   }
 `;
 

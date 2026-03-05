@@ -1,20 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@apollo/client/react";
-import { TASKS_BOARD_QUERY } from "@/lib/graphql/queries";
+import { useQuery, useMutation } from "@apollo/client/react";
+import {
+  TASKS_BOARD_QUERY,
+  CLAIM_TASK_MUTATION,
+  UNCLAIM_TASK_MUTATION,
+  ASSIGN_TASK_MUTATION,
+} from "@/lib/graphql/queries";
 import { useRealtimeTable } from "@/hooks/use-realtime";
-import type { Task } from "./types";
+import { useGlobalFilters } from "@/hooks/use-global-filters";
+import type { Task, ProjectGroup, DeveloperGroup, SprintTaskGroup } from "./types";
 import {
   taskKey,
   isStaleTask,
-  relativeTime,
+  formatDuration,
   computeTicks,
   LABEL_WIDTH,
   SPRINT_HEADER_HEIGHT,
   ROW_TOTAL,
-  ROW_HEIGHT,
   MS_PER_HOUR,
   ZOOM_PRESETS,
 } from "./helpers";
+
+// ── Exported types (keep SprintGroup for Gantt) ──────────────
 
 export interface SprintGroup {
   sprint: string;
@@ -38,18 +45,123 @@ export interface Kpis {
   latestCompleted: string | null;
 }
 
-export interface Contributor {
-  name: string;
-  done: number;
-  inProgress: number;
-  remaining: number;
-  avgBlowUp: string;
-  lastActive: string;
+// ── Pure functions (exported for testing) ────────────────────
+
+/**
+ * Group tasks by project using sprint-to-projectId mapping.
+ * Tasks within each sprint are sorted by taskNum.
+ */
+export function groupTasksByProject(
+  tasks: Task[],
+  sprintProjects: Map<string, string | null>
+): ProjectGroup[] {
+  if (tasks.length === 0) return [];
+
+  // Collect sprints per project
+  const projectMap = new Map<string | null, Map<string, Task[]>>();
+
+  for (const t of tasks) {
+    const projectId = sprintProjects.get(t.sprint) ?? null;
+
+    if (!projectMap.has(projectId)) {
+      projectMap.set(projectId, new Map());
+    }
+    const sprintMap = projectMap.get(projectId)!;
+
+    if (!sprintMap.has(t.sprint)) {
+      sprintMap.set(t.sprint, []);
+    }
+    sprintMap.get(t.sprint)!.push(t);
+  }
+
+  const groups: ProjectGroup[] = [];
+  for (const [projectId, sprintMap] of projectMap) {
+    const sprints: SprintTaskGroup[] = [];
+    for (const [sprint, sprintTasks] of sprintMap) {
+      sprintTasks.sort((a, b) => a.taskNum - b.taskNum);
+      sprints.push({ sprint, tasks: sprintTasks });
+    }
+    groups.push({ projectId, sprints });
+  }
+
+  return groups;
 }
 
+/**
+ * Group tasks by developer/owner. Unassigned tasks go under "unassigned".
+ * Groups are sorted alphabetically by developer name.
+ */
+export function groupTasksByDeveloper(tasks: Task[]): DeveloperGroup[] {
+  if (tasks.length === 0) return [];
+
+  const devMap = new Map<string, Task[]>();
+
+  for (const t of tasks) {
+    const dev = t.owner?.name ?? "unassigned";
+    if (!devMap.has(dev)) {
+      devMap.set(dev, []);
+    }
+    devMap.get(dev)!.push(t);
+  }
+
+  return Array.from(devMap.entries())
+    .map(([developer, devTasks]) => ({ developer, tasks: devTasks }))
+    .sort((a, b) => a.developer.localeCompare(b.developer));
+}
+
+/**
+ * Compute live time-in-status for a task.
+ * Returns a human-readable duration for red/blocked tasks with startedAt,
+ * or an em-dash for tasks that are pending/green or have no startedAt.
+ */
+export function computeTimeInStatus(task: Task): string {
+  // Only compute for active statuses (in-progress or blocked)
+  if (task.status !== "red" && task.status !== "blocked") return "\u2014";
+  if (!task.startedAt) return "\u2014";
+
+  return formatDuration(task.startedAt, null);
+}
+
+// ── Hook ─────────────────────────────────────────────────────
+
 export function useTasksData() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Turbopack requires <any> for Apollo hooks
   const { data, loading, error, refetch } = useQuery<any>(TASKS_BOARD_QUERY);
   useRealtimeTable("tasks", refetch);
+
+  // Global filters (person, project, groupBy)
+  const { person, project, groupBy } = useGlobalFilters();
+
+  // Claim/assign mutations
+  /* eslint-disable @typescript-eslint/no-explicit-any -- Turbopack requires <any> for Apollo hooks */
+  const [claimTaskMutation] = useMutation<any>(CLAIM_TASK_MUTATION, {
+    refetchQueries: [{ query: TASKS_BOARD_QUERY }],
+  });
+  const [unclaimTaskMutation] = useMutation<any>(UNCLAIM_TASK_MUTATION, {
+    refetchQueries: [{ query: TASKS_BOARD_QUERY }],
+  });
+  const [assignTaskMutation] = useMutation<any>(ASSIGN_TASK_MUTATION, {
+    refetchQueries: [{ query: TASKS_BOARD_QUERY }],
+  });
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  const claimTask = useCallback(
+    (sprint: string, taskNum: number, developer: string) =>
+      claimTaskMutation({ variables: { sprint, taskNum, developer } }),
+    [claimTaskMutation]
+  );
+
+  const unclaimTask = useCallback(
+    (sprint: string, taskNum: number) =>
+      unclaimTaskMutation({ variables: { sprint, taskNum } }),
+    [unclaimTaskMutation]
+  );
+
+  const assignTask = useCallback(
+    (sprint: string, taskNum: number, developer: string) =>
+      assignTaskMutation({ variables: { sprint, taskNum, developer } }),
+    [assignTaskMutation]
+  );
 
   const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(null);
   const [collapsedSprints, setCollapsedSprints] = useState<Set<string>>(new Set());
@@ -59,6 +171,13 @@ export function useTasksData() {
   const [sprintFilter, setSprintFilter] = useState<string | null>(null);
   const [ownerFilter, setOwnerFilter] = useState<string | null>(null);
   const [zoomPreset, setZoomPreset] = useState(3);
+
+  // Time-in-status tick counter (forces re-computation every 60s)
+  const [timeInStatusTick, setTimeInStatusTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTimeInStatusTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -76,6 +195,16 @@ export function useTasksData() {
 
   const allTasks: Task[] = useMemo(() => data?.tasks ?? [], [data]);
 
+  // Sprint-to-projectId lookup from the sprints query
+  const sprintProjects = useMemo(() => {
+    const m = new Map<string, string | null>();
+    const sprints = data?.sprints ?? [];
+    for (const s of sprints) {
+      m.set(s.name, s.projectId ?? null);
+    }
+    return m;
+  }, [data]);
+
   const allSprints = useMemo(() => {
     const s = new Set<string>();
     for (const t of allTasks) s.add(t.sprint);
@@ -88,14 +217,22 @@ export function useTasksData() {
     return Array.from(s).sort();
   }, [allTasks]);
 
+  // Apply local filters + global filters (person, project)
   const filteredTasks = useMemo(() => {
     return allTasks.filter((t) => {
       if (!statusFilter.has(t.status)) return false;
       if (sprintFilter && t.sprint !== sprintFilter) return false;
       if (ownerFilter && t.owner?.name !== ownerFilter) return false;
+      // Global person filter
+      if (person && t.owner?.name !== person) return false;
+      // Global project filter
+      if (project) {
+        const taskProject = sprintProjects.get(t.sprint);
+        if (taskProject !== project) return false;
+      }
       return true;
     });
-  }, [allTasks, statusFilter, sprintFilter, ownerFilter]);
+  }, [allTasks, statusFilter, sprintFilter, ownerFilter, person, project, sprintProjects]);
 
   const taskIndex = useMemo(() => {
     const m = new Map<string, Task>();
@@ -192,6 +329,29 @@ export function useTasksData() {
     return { sprintGroups: groups, rowPositions: rowPos, totalHeight: currentY };
   }, [filteredTasks, collapsedSprints]);
 
+  // Project grouping
+  const projectGroups: ProjectGroup[] = useMemo(
+    () => groupTasksByProject(filteredTasks, sprintProjects),
+    [filteredTasks, sprintProjects]
+  );
+
+  // Developer grouping
+  const developerGroups: DeveloperGroup[] = useMemo(
+    () => groupTasksByDeveloper(filteredTasks),
+    [filteredTasks]
+  );
+
+  // Time-in-status map (task key -> duration string), recomputed every 60s via tick
+  const timeInStatusMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of allTasks) {
+      m.set(taskKey(t.sprint, t.taskNum), computeTimeInStatus(t));
+    }
+    return m;
+    // timeInStatusTick drives periodic re-computation without re-querying
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allTasks, timeInStatusTick]);
+
   const ticks = useMemo(
     () => computeTicks(timeRange.start, timeRange.end, pxPerHour),
     [timeRange, pxPerHour]
@@ -237,48 +397,6 @@ export function useTasksData() {
       blockedCount: blocked.length,
       latestCompleted,
     };
-  }, [allTasks]);
-
-  const contributors: Contributor[] = useMemo(() => {
-    const byOwner = new Map<
-      string,
-      { done: number; inProgress: number; remaining: number; blowUps: number[]; lastActive: number }
-    >();
-
-    for (const t of allTasks) {
-      const name = t.owner?.name ?? "unassigned";
-      if (!byOwner.has(name)) {
-        byOwner.set(name, { done: 0, inProgress: 0, remaining: 0, blowUps: [], lastActive: 0 });
-      }
-      const entry = byOwner.get(name)!;
-      if (t.status === "green") entry.done++;
-      else if (t.status === "red") entry.inProgress++;
-      else entry.remaining++;
-      if (t.blowUpRatio != null) entry.blowUps.push(t.blowUpRatio);
-
-      if (t.startedAt) {
-        const ts = new Date(t.startedAt).getTime();
-        if (ts > entry.lastActive) entry.lastActive = ts;
-      }
-      if (t.completedAt) {
-        const ts = new Date(t.completedAt).getTime();
-        if (ts > entry.lastActive) entry.lastActive = ts;
-      }
-    }
-
-    return Array.from(byOwner.entries())
-      .map(([name, d]) => ({
-        name,
-        done: d.done,
-        inProgress: d.inProgress,
-        remaining: d.remaining,
-        avgBlowUp:
-          d.blowUps.length > 0
-            ? (d.blowUps.reduce((a, b) => a + b, 0) / d.blowUps.length).toFixed(1)
-            : "—",
-        lastActive: d.lastActive > 0 ? relativeTime(new Date(d.lastActive).toISOString()) : "—",
-      }))
-      .sort((a, b) => b.done - a.done);
   }, [allTasks]);
 
   const selectedTask = selectedTaskKey ? taskIndex.get(selectedTaskKey) ?? null : null;
@@ -335,7 +453,16 @@ export function useTasksData() {
     ticks,
     nowPx,
     kpis,
-    contributors,
+    // Grouping views
+    groupBy,
+    projectGroups,
+    developerGroups,
+    timeInStatusMap,
+    // Mutations
+    claimTask,
+    unclaimTask,
+    assignTask,
+    // Selection & navigation
     selectedTask,
     selectedTaskKey,
     setSelectedTaskKey,

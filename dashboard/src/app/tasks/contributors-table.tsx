@@ -2,7 +2,14 @@
 
 import { Card } from "@/components/ui/card";
 import { blowUpColor } from "./helpers";
-import type { Contributor } from "./use-tasks-data";
+interface Contributor {
+  name: string;
+  done: number;
+  inProgress: number;
+  remaining: number;
+  avgBlowUp: string;
+  lastActive: string;
+}
 
 interface ContributorsTableProps {
   contributors: Contributor[];

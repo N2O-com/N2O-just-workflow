@@ -6,8 +6,8 @@ import { relativeTime } from "./helpers";
 import { useTasksData } from "./use-tasks-data";
 import { TaskFilters } from "./task-filters";
 import { GanttChart } from "./gantt-chart";
-import { ContributorsTable } from "./contributors-table";
 import { TaskDetailSheet } from "./task-detail-sheet";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function TasksPage() {
   const {
@@ -32,7 +32,6 @@ export default function TasksPage() {
     ticks,
     nowPx,
     kpis,
-    contributors,
     selectedTask,
     setSelectedTaskKey,
     collapsedSprints,
@@ -46,8 +45,29 @@ export default function TasksPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-muted-foreground">
-        Loading...
+      <div className="space-y-4">
+        <h1 className="text-lg font-semibold">Tasks</h1>
+        <div className="grid grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="rounded-md border border-border bg-card p-3 space-y-2">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-6 w-16" />
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-7 w-24 rounded-sm" />
+          ))}
+        </div>
+        <div className="rounded-md border border-border bg-card p-3 space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Skeleton className="h-4 w-[120px] shrink-0" />
+              <Skeleton className="h-5 flex-1" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -119,8 +139,6 @@ export default function TasksPage() {
         onSelectTask={setSelectedTaskKey}
         timeToPx={timeToPx}
       />
-
-      <ContributorsTable contributors={contributors} />
 
       <TaskDetailSheet
         task={selectedTask}
