@@ -6,6 +6,7 @@ import {
   Activity,
   HeartPulse,
   ListTodo,
+  MessageSquare,
   Network,
   Radio,
   Sparkles,
@@ -28,10 +29,12 @@ const nav = [
 
 export function Sidebar({
   onAskToggle,
+  onActivityToggle,
   expanded,
   onToggleExpanded,
 }: {
   onAskToggle?: () => void;
+  onActivityToggle?: () => void;
   expanded: boolean;
   onToggleExpanded: () => void;
 }) {
@@ -94,8 +97,34 @@ export function Sidebar({
         })}
       </div>
 
-      {/* Ask button at bottom */}
-      <div className={`mt-auto ${expanded ? "px-2" : "flex justify-center"}`}>
+      {/* Activity + Ask buttons at bottom */}
+      <div className={`mt-auto flex flex-col gap-1 ${expanded ? "px-2" : "items-center"}`}>
+        {/* Activity panel toggle */}
+        {expanded ? (
+          <button
+            onClick={onActivityToggle}
+            className="flex w-full items-center gap-2.5 rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <MessageSquare size={17} />
+            <span>Activity</span>
+          </button>
+        ) : (
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild>
+              <button
+                onClick={onActivityToggle}
+                className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <MessageSquare size={18} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              Activity Panel
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        {/* Ask panel toggle */}
         {expanded ? (
           <button
             onClick={onAskToggle}

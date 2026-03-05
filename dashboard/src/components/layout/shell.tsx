@@ -5,6 +5,7 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { FilterBar } from "./filter-bar";
 import { AskRuntimeProvider, AskContent } from "@/components/ask-panel";
+import { ActivityPanel } from "@/components/activity/activity-panel";
 import { createChat, getChat, type ChatEntry } from "@/lib/ask/chat-store";
 import { HealthFooter } from "./health-footer";
 
@@ -17,8 +18,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const isAskPage = pathname === "/ask";
+  const isActivityPage = pathname === "/activity";
 
   const [askOpen, setAskOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activitySessionId, setActivitySessionId] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [chatKey, setChatKey] = useState(0);
@@ -180,8 +184,37 @@ export function Shell({ children }: { children: React.ReactNode }) {
     [isAskPage, router]
   );
 
+  // ── Activity panel handlers ─────────────────────────
+  const toggleActivity = useCallback(() => {
+    setActivityOpen((prev) => {
+      const next = !prev;
+      if (next) setAskOpen(false); // mutual exclusion
+      return next;
+    });
+    setActivitySessionId(null);
+  }, []);
+
+  // Open activity scoped to a specific session (can be called from child pages)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- will be wired to Streams cards
+  const openActivityForSession = useCallback((sessionId: string) => {
+    setAskOpen(false); // mutual exclusion
+    setActivitySessionId(sessionId);
+    setActivityOpen(true);
+  }, []);
+
+  const closeActivity = useCallback(() => {
+    setActivityOpen(false);
+    setActivitySessionId(null);
+  }, []);
+
+  // Activity fullscreen = navigate to /activity route
+  const handleActivityFullscreen = useCallback(() => {
+    router.push("/activity");
+  }, [router]);
+
   // Show the ask UI? Either as panel (non-/ask pages) or fullscreen (/ask page)
   const showAsk = askOpen || isAskPage;
+  const showActivity = activityOpen && !isAskPage && !isActivityPage;
 
   // Shared AskContent props
   const askContentProps = {
@@ -208,14 +241,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar
-        onAskToggle={() => setAskOpen((o) => !o)}
+        onAskToggle={() => {
+          setAskOpen((o) => {
+            const next = !o;
+            if (next) { setActivityOpen(false); setActivitySessionId(null); }
+            return next;
+          });
+        }}
+        onActivityToggle={toggleActivity}
         expanded={sidebarExpanded}
         onToggleExpanded={() => setSidebarExpanded((e) => !e)}
       />
       <div
         className="flex flex-1 flex-col min-h-0"
         style={{
-          marginRight: showAsk ? `${panelWidth}px` : "0px",
+          marginRight: (showAsk || showActivity) ? `${panelWidth}px` : "0px",
         }}
       >
         <FilterBar />
@@ -240,6 +280,28 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <AskRuntimeProvider key={chatKey} chatId={chatId} onChatCreated={handleChatCreated}>
               <AskContent mode="panel" {...askContentProps} />
             </AskRuntimeProvider>
+          </div>
+        </div>
+      )}
+
+      {/* Activity panel overlay */}
+      {showActivity && (
+        <div
+          className="fixed right-0 top-0 z-50 flex h-screen"
+          style={{ width: `${panelWidth}px` }}
+        >
+          {/* Drag handle (left edge) */}
+          <div
+            onMouseDown={handleMouseDown}
+            className="w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors flex-shrink-0"
+          />
+          <div className="flex-1 min-w-0 min-h-0">
+            <ActivityPanel
+              mode="panel"
+              sessionId={activitySessionId ?? undefined}
+              onClose={closeActivity}
+              onFullscreen={handleActivityFullscreen}
+            />
           </div>
         </div>
       )}
