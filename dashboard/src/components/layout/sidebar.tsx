@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ListTodo,
-  MessageSquare,
+  Activity,
   Network,
   Radio,
   Sparkles,
@@ -101,7 +101,7 @@ export function Sidebar({
             onClick={onActivityToggle}
             className="flex w-full items-center gap-2.5 rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
           >
-            <MessageSquare size={17} />
+            <Activity size={17} />
             <span>Activity</span>
           </button>
         ) : (
@@ -111,7 +111,7 @@ export function Sidebar({
                 onClick={onActivityToggle}
                 className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
               >
-                <MessageSquare size={18} />
+                <Activity size={18} />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8}>
