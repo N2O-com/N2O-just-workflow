@@ -5,6 +5,8 @@
  * structure of nodes (entity types) and edges (field references).
  */
 
+import type { PgTableMetadata } from "./pg-types";
+
 // ── Types ────────────────────────────────────────────────
 
 export interface IntrospectionTypeRef {
@@ -32,6 +34,7 @@ export interface GraphNode {
   fields: FieldInfo[];
   incomingEdges: string[];
   healthStatus?: "green" | "yellow" | "red" | null;
+  pgMetadata?: PgTableMetadata;
 }
 
 export interface GraphEdge {
