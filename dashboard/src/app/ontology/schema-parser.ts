@@ -45,6 +45,37 @@ export interface GraphData {
   edges: GraphEdge[];
 }
 
+export interface AggregatedEdge {
+  source: string;
+  target: string;
+  labels: string[];
+  count: number;
+}
+
+/**
+ * Aggregate multiple edges between the same source::target pair.
+ * Returns one AggregatedEdge per unique direction, with a count and all labels.
+ */
+export function aggregateEdges(edges: GraphEdge[]): AggregatedEdge[] {
+  const map = new Map<string, AggregatedEdge>();
+  for (const e of edges) {
+    const key = `${e.source}::${e.target}`;
+    const existing = map.get(key);
+    if (existing) {
+      existing.labels.push(e.label);
+      existing.count++;
+    } else {
+      map.set(key, {
+        source: e.source,
+        target: e.target,
+        labels: [e.label],
+        count: 1,
+      });
+    }
+  }
+  return Array.from(map.values());
+}
+
 // ── Constants ────────────────────────────────────────────
 
 /** Type name prefixes to filter out of the graph. */
@@ -58,17 +89,6 @@ const SCALAR_TYPES = new Set(["String", "Int", "Float", "Boolean", "ID"]);
 
 /** Non-object kinds to skip. */
 const SKIP_KINDS = new Set(["INPUT_OBJECT", "ENUM", "SCALAR", "UNION", "INTERFACE"]);
-
-// ── Staleness tolerance per stream (in hours) ───────────
-// Mirrors the health page thresholds.
-
-const TOLERANCE: Record<string, number> = {
-  transcripts: 1,
-  workflow_events: 1,
-  tasks: 24,
-  developer_context: 168, // 7 days
-  skill_versions: 720,    // 30 days
-};
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -149,57 +169,3 @@ export function parseSchemaToGraph(types: IntrospectionType[]): GraphData {
   return { nodes, edges };
 }
 
-// ── Health status mapping ───────────────────────────────
-
-interface HealthStream {
-  stream: string;
-  count: number;
-  lastUpdated: string | null;
-  recentCount: number;
-}
-
-/**
- * Compute health status per entity type from DataHealth streams.
- * Returns a map of entity type name -> "green" | "yellow" | "red".
- */
-export function getHealthStatus(
-  streams: HealthStream[],
-  lastSessionEndedAt: string | null,
-  streamEntityMap: Record<string, string>
-): Record<string, "green" | "yellow" | "red"> {
-  const result: Record<string, "green" | "yellow" | "red"> = {};
-
-  if (!lastSessionEndedAt) return result;
-
-  const sessionMs = new Date(lastSessionEndedAt).getTime();
-  if (isNaN(sessionMs)) return result;
-
-  for (const s of streams) {
-    const entityName = streamEntityMap[s.stream];
-    if (!entityName) continue;
-
-    if (!s.lastUpdated) {
-      result[entityName] = "red";
-      continue;
-    }
-
-    const updatedMs = new Date(s.lastUpdated).getTime();
-    if (isNaN(updatedMs)) {
-      result[entityName] = "red";
-      continue;
-    }
-
-    const tolerance = TOLERANCE[s.stream] ?? 24;
-    const lagHours = Math.max(0, (sessionMs - updatedMs) / (1000 * 60 * 60));
-
-    if (lagHours <= tolerance) {
-      result[entityName] = "green";
-    } else if (lagHours <= tolerance * 2) {
-      result[entityName] = "yellow";
-    } else {
-      result[entityName] = "red";
-    }
-  }
-
-  return result;
-}

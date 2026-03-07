@@ -1,635 +1,259 @@
 /**
- * Ontology page: force-directed graph of all GraphQL entity types.
+ * Ontology Explorer — thin composition shell.
  *
- * - Nodes = GraphQL OBJECT types (Task, Sprint, Developer, etc.)
- * - Edges = fields that reference other OBJECT types
- * - Click node -> right sidebar with field details
- * - Health freshness dots per entity node
- * - Search bar to find/highlight entities
+ * Rendering logic lives in:
+ *   ontology-canvas.ts   – canvas drawing + interaction callbacks
+ *   category-sidebar.tsx – left sidebar with category groups
+ *   detail-panel.tsx     – right detail panel with properties + linked types
+ *   type-card-grid.tsx   – card grid (list view)
  */
 "use client";
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useQuery } from "@apollo/client/react";
-import { gql } from "@apollo/client/core";
-import { Search, X, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { LayoutGrid, Share2, X, ZoomIn, ZoomOut, Maximize2, Pin } from "lucide-react";
 import { DATA_HEALTH_QUERY } from "@/lib/graphql/queries";
-import {
-  parseSchemaToGraph,
-  getHealthStatus,
-  type GraphNode,
-  type GraphEdge,
-  type IntrospectionType,
-} from "./schema-parser";
+import { parseSchemaToGraph, aggregateEdges, type IntrospectionType } from "./schema-parser";
+import { getHealthStatus, STREAM_ENTITY_MAP } from "./health-status";
+import { graphqlAdapter, INTROSPECTION_QUERY } from "./graphql-adapter";
+import { createCanvasCallbacks, COLORS, type EnrichedNode, type ForceLink } from "./ontology-canvas";
+import { CategorySidebar } from "./category-sidebar";
+import { DetailPanel } from "./detail-panel";
+import { TypeCardGrid } from "./type-card-grid";
 
-// ── Dynamic import (no SSR for canvas-based lib) ────────
+const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
-  ssr: false,
-});
-
-// ── Introspection query ─────────────────────────────────
-
-const INTROSPECTION_QUERY = gql`
-  query OntologyIntrospection {
-    __schema {
-      types {
-        name
-        kind
-        description
-        fields {
-          name
-          type {
-            name
-            kind
-            ofType {
-              name
-              kind
-              ofType {
-                name
-                kind
-                ofType {
-                  name
-                  kind
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-// ── Stream -> entity mapping ────────────────────────────
-
-const STREAM_ENTITY_MAP: Record<string, string> = {
-  transcripts: "Transcript",
-  workflow_events: "Event",
-  tasks: "Task",
-  developer_context: "DeveloperContext",
-  skill_versions: "SkillVersion",
-};
-
-// ── Colors ──────────────────────────────────────────────
-
-const COLORS = {
-  bg: "#1C2127",
-  nodeFill: "#2D72D2",
-  nodeHighlight: "#4B94E6",
-  nodeMatched: "#FFFFFF",
-  nodeDimmed: "#394048",
-  edge: "#394048",
-  edgeHighlight: "#5F6B7C",
-  text: "#F5F8FA",
-  textMuted: "#738694",
-  card: "#252A31",
-  border: "#394048",
-  healthGreen: "#238551",
-  healthYellow: "#EC9A3C",
-  healthRed: "#CD4246",
-};
-
-// ── Force graph node/link shapes ────────────────────────
-// Use permissive index-signature types matching react-force-graph's NodeObject.
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ForceNode = Record<string, any>;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ForceLink = Record<string, any>;
-
-// ── Main component ──────────────────────────────────────
+const adapter = graphqlAdapter;
+const CATEGORY_CONFIG = adapter.getCategoryConfig();
 
 export default function OntologyPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const graphContainerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [selectedNode, setSelectedNode] = useState<EnrichedNode | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [hoveredLink, setHoveredLink] = useState<ForceLink | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "graph">("graph");
+  const [activeCategoryFilter, setActiveCategoryFilter] = useState<string | null>(null);
 
-  // Measure container on mount and resize
   useEffect(() => {
-    function updateDimensions() {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setDimensions({
-          width: rect.width,
-          height: rect.height,
-        });
-      }
-    }
-    updateDimensions();
-    window.addEventListener("resize", updateDimensions);
-    return () => window.removeEventListener("resize", updateDimensions);
+    const el = graphContainerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setDimensions({ width: entry.contentRect.width, height: entry.contentRect.height });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
 
-  // ── Data fetching ───────────────────────────────────
-
-  const {
-    data: schemaData,
-    loading: schemaLoading,
-    error: schemaError,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } = useQuery<any>(INTROSPECTION_QUERY);
-
-  const {
-    data: healthData,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } = useQuery<any>(DATA_HEALTH_QUERY, {
-    pollInterval: 30000,
-  });
-
-  // ── Parse schema into graph ─────────────────────────
+  const { data: schemaData, loading: schemaLoading, error: schemaError } = useQuery<any>(INTROSPECTION_QUERY);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: healthData } = useQuery<any>(DATA_HEALTH_QUERY, { pollInterval: 30000 });
 
   const graphData = useMemo(() => {
     if (!schemaData?.__schema?.types) return null;
-    const types: IntrospectionType[] = schemaData.__schema.types;
-    return parseSchemaToGraph(types);
+    return parseSchemaToGraph(schemaData.__schema.types as IntrospectionType[]);
   }, [schemaData]);
 
-  // ── Health status per entity ────────────────────────
-
   const healthMap = useMemo(() => {
-    const streams = healthData?.dataHealth?.streams ?? [];
-    const lastSession = healthData?.dataHealth?.lastSessionEndedAt ?? null;
-    return getHealthStatus(streams, lastSession, STREAM_ENTITY_MAP);
+    return getHealthStatus(healthData?.dataHealth?.streams ?? [], healthData?.dataHealth?.lastSessionEndedAt ?? null, STREAM_ENTITY_MAP);
   }, [healthData]);
 
-  // ── Apply health status to nodes ────────────────────
-
-  const enrichedNodes = useMemo(() => {
+  const enrichedNodes = useMemo<EnrichedNode[]>(() => {
     if (!graphData) return [];
-    return graphData.nodes.map((n) => ({
-      ...n,
-      healthStatus: healthMap[n.id] ?? null,
-    }));
+    return graphData.nodes.map((n) => ({ ...n, healthStatus: healthMap[n.id] ?? null, category: adapter.getCategoryForType(n.id) }));
   }, [graphData, healthMap]);
 
-  // ── Search filtering ────────────────────────────────
-
-  const matchedNodeIds = useMemo(() => {
-    if (!searchQuery.trim()) return new Set<string>();
-    const q = searchQuery.toLowerCase();
-    return new Set(
-      enrichedNodes
-        .filter((n) => n.id.toLowerCase().includes(q))
-        .map((n) => n.id)
-    );
-  }, [searchQuery, enrichedNodes]);
-
-  const hasSearch = searchQuery.trim().length > 0;
-
-  // ── Force graph data ────────────────────────────────
-
-  const forceGraphData = useMemo(() => {
-    if (!graphData) return { nodes: [], links: [] };
-    return {
-      nodes: enrichedNodes,
-      links: graphData.edges.map((e: GraphEdge) => ({
-        source: e.source,
-        target: e.target,
-        label: e.label,
-      })),
-    };
-  }, [enrichedNodes, graphData]);
-
-  // ── Node click handler ──────────────────────────────
-
-  const handleNodeClick = useCallback(
-    (node: ForceNode) => {
-      const found = enrichedNodes.find((n) => n.id === node.id);
-      setSelectedNode(found ?? null);
-    },
-    [enrichedNodes]
-  );
-
-  const handleBackgroundClick = useCallback(() => {
-    setSelectedNode(null);
-  }, []);
-
-  // ── Zoom controls ──────────────────────────────────
-
-  const handleZoomIn = useCallback(() => {
-    if (graphRef.current) {
-      const currentZoom = graphRef.current.zoom();
-      graphRef.current.zoom(currentZoom * 1.5, 300);
+  const categoryGroups = useMemo(() => {
+    const groups: Record<string, EnrichedNode[]> = {};
+    for (const node of enrichedNodes) {
+      if (!groups[node.category]) groups[node.category] = [];
+      groups[node.category].push(node);
     }
-  }, []);
+    return groups;
+  }, [enrichedNodes]);
 
-  const handleZoomOut = useCallback(() => {
-    if (graphRef.current) {
-      const currentZoom = graphRef.current.zoom();
-      graphRef.current.zoom(currentZoom / 1.5, 300);
+  const filteredNodes = useMemo(() => {
+    let nodes = enrichedNodes;
+    if (activeCategoryFilter) nodes = nodes.filter((n) => n.category === activeCategoryFilter);
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      nodes = nodes.filter((n) => n.id.toLowerCase().includes(q));
     }
-  }, []);
+    return nodes;
+  }, [enrichedNodes, activeCategoryFilter, searchQuery]);
 
-  const handleZoomFit = useCallback(() => {
-    if (graphRef.current) {
-      graphRef.current.zoomToFit(400, 40);
-    }
-  }, []);
+  const aggregatedEdges = useMemo(() => {
+    if (!graphData) return [];
+    const visibleIds = new Set(filteredNodes.map((n) => n.id));
+    return aggregateEdges(graphData.edges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target)));
+  }, [graphData, filteredNodes]);
 
-  // ── Node hover ─────────────────────────────────────
+  const forceGraphData = useMemo(() => ({
+    nodes: filteredNodes,
+    links: aggregatedEdges.map((e) => ({ source: e.source, target: e.target, labels: e.labels, count: e.count })),
+  }), [filteredNodes, aggregatedEdges]);
 
-  const handleNodeHover = useCallback((node: ForceNode | null) => {
-    setHoveredNode(node?.id ?? null);
-  }, []);
+  const canvas = useMemo(() => createCanvasCallbacks({
+    graphRef, selectedNode, enrichedNodes, forceGraphData, aggregatedEdges,
+    hoveredNode, hoveredLink, categoryConfig: CATEGORY_CONFIG,
+    setSelectedNode, setHoveredNode, setHoveredLink,
+  }), [selectedNode, enrichedNodes, forceGraphData, aggregatedEdges, hoveredNode, hoveredLink]);
 
-  // ── Custom node rendering ──────────────────────────
-
-  const nodeCanvasObject = useCallback(
-    (node: ForceNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const label = node.id as string;
-      const fontSize = 12 / globalScale;
-      ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
-
-      // Determine node state
-      const isSelected = selectedNode?.id === node.id;
-      const isHovered = hoveredNode === node.id;
-      const isMatched = hasSearch && matchedNodeIds.has(node.id);
-      const isDimmed = hasSearch && !matchedNodeIds.has(node.id);
-
-      // Node sizing
-      const fieldCount = node.fieldCount ?? 4;
-      const baseRadius = Math.max(8, Math.min(18, 6 + fieldCount * 0.8)) / globalScale;
-      const radius = isSelected || isHovered ? baseRadius * 1.2 : baseRadius;
-
-      // Node fill color
-      let fillColor = COLORS.nodeFill;
-      if (isDimmed) fillColor = COLORS.nodeDimmed;
-      if (isMatched) fillColor = COLORS.nodeHighlight;
-      if (isSelected) fillColor = COLORS.nodeHighlight;
-      if (isHovered && !isSelected) fillColor = COLORS.nodeHighlight;
-
-      // Draw node circle
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
-      ctx.fillStyle = fillColor;
-      ctx.fill();
-
-      // Selection ring
-      if (isSelected) {
-        ctx.strokeStyle = COLORS.text;
-        ctx.lineWidth = 2 / globalScale;
-        ctx.stroke();
-      }
-
-      // Health dot (top-right of node)
-      const health = node.healthStatus as string | null;
-      if (health) {
-        const dotRadius = 3 / globalScale;
-        const dotX = node.x + radius * 0.7;
-        const dotY = node.y - radius * 0.7;
-        ctx.beginPath();
-        ctx.arc(dotX, dotY, dotRadius, 0, 2 * Math.PI);
-        ctx.fillStyle =
-          health === "green"
-            ? COLORS.healthGreen
-            : health === "yellow"
-              ? COLORS.healthYellow
-              : COLORS.healthRed;
-        ctx.fill();
-      }
-
-      // Label
-      const textOpacity = isDimmed ? 0.3 : 1;
-      ctx.fillStyle = COLORS.text;
-      ctx.globalAlpha = textOpacity;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillText(label, node.x, node.y + radius + 2 / globalScale);
-      ctx.globalAlpha = 1;
-    },
-    [selectedNode, hoveredNode, hasSearch, matchedNodeIds]
-  );
-
-  const nodePointerAreaPaint = useCallback(
-    (node: ForceNode, color: string, ctx: CanvasRenderingContext2D, globalScale: number) => {
-      const fieldCount = node.fieldCount ?? 4;
-      const radius = Math.max(8, Math.min(18, 6 + fieldCount * 0.8)) / globalScale;
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, radius * 1.5, 0, 2 * Math.PI);
-      ctx.fillStyle = color;
-      ctx.fill();
-    },
-    []
-  );
-
-  // ── Link rendering ────────────────────────────────
-
-  const linkColor = useCallback(
-    (link: ForceLink) => {
-      if (selectedNode) {
-        const srcId = typeof link.source === "object" ? (link.source as ForceNode).id : link.source;
-        const tgtId = typeof link.target === "object" ? (link.target as ForceNode).id : link.target;
-        if (srcId === selectedNode.id || tgtId === selectedNode.id) {
-          return COLORS.edgeHighlight;
-        }
-      }
-      if (hasSearch) return COLORS.nodeDimmed;
-      return COLORS.edge;
-    },
-    [selectedNode, hasSearch]
-  );
-
-  // ── Sidebar width ─────────────────────────────────
-
-  const sidebarOpen = selectedNode !== null;
-  const sidebarWidth = 320;
-
-  // Recalculate graph width when sidebar opens/closes
   useEffect(() => {
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      setDimensions({
-        width: rect.width - (sidebarOpen ? sidebarWidth : 0),
-        height: rect.height,
-      });
-    }
-  }, [sidebarOpen]);
+    if (!graphRef.current) return;
+    graphRef.current.d3Force("center", null);
+    graphRef.current.d3Force("charge")?.strength(-300);
+    graphRef.current.d3Force("link")?.distance(120);
+  }, [forceGraphData]);
 
-  // ── Loading / error states ────────────────────────
+  const entityConfig = selectedNode ? adapter.getEntityColumns(selectedNode.id) : undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { data: entityData } = useQuery<any>(entityConfig?.query ?? INTROSPECTION_QUERY, { skip: !entityConfig });
+  const recentRecords = useMemo(() => {
+    if (!entityConfig || !entityData) return [];
+    const records = entityData[entityConfig.field];
+    return Array.isArray(records) ? records.slice(0, 8) : [];
+  }, [entityConfig, entityData]);
 
-  if (schemaLoading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-sm text-muted-foreground">Loading schema...</div>
-      </div>
-    );
-  }
-
-  if (schemaError) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="rounded-md border border-[#CD4246]/30 bg-[#CD4246]/10 p-4 text-sm text-[#CD4246]">
-          Failed to load schema: {schemaError.message}
-        </div>
-      </div>
-    );
-  }
-
-  if (!graphData || graphData.nodes.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-sm text-muted-foreground">No entity types found in schema.</div>
-      </div>
-    );
-  }
+  if (schemaLoading) return <div className="flex h-full items-center justify-center"><div className="text-sm text-muted-foreground">Loading schema...</div></div>;
+  if (schemaError) return <div className="flex h-full items-center justify-center"><div className="rounded-md border border-[#CD4246]/30 bg-[#CD4246]/10 p-4 text-sm text-[#CD4246]">Failed to load schema: {schemaError.message}</div></div>;
+  if (!graphData || graphData.nodes.length === 0) return <div className="flex h-full items-center justify-center"><div className="text-sm text-muted-foreground">No entity types found in schema.</div></div>;
 
   return (
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden">
-      {/* Search bar */}
-      <div className="absolute left-4 top-4 z-10 flex items-center gap-2">
-        <div className="flex items-center rounded-md border border-border bg-card px-3 py-1.5 text-sm">
-          <Search size={14} className="mr-2 text-muted-foreground" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search entities..."
-            className="bg-transparent text-foreground placeholder:text-muted-foreground outline-none w-48"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="ml-1 text-muted-foreground hover:text-foreground"
-            >
-              <X size={14} />
-            </button>
-          )}
-        </div>
-        {hasSearch && (
-          <span className="text-xs text-muted-foreground">
-            {matchedNodeIds.size} of {enrichedNodes.length} entities
-          </span>
-        )}
-      </div>
-
-      {/* Zoom controls */}
-      <div className="absolute left-4 bottom-4 z-10 flex flex-col gap-1">
-        <button
-          onClick={handleZoomIn}
-          className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-          title="Zoom in"
-        >
-          <ZoomIn size={16} />
-        </button>
-        <button
-          onClick={handleZoomOut}
-          className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-          title="Zoom out"
-        >
-          <ZoomOut size={16} />
-        </button>
-        <button
-          onClick={handleZoomFit}
-          className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
-          title="Fit to view"
-        >
-          <Maximize2 size={16} />
-        </button>
-      </div>
-
-      {/* Legend */}
-      <div className="absolute right-4 bottom-4 z-10 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground"
-           style={{ right: sidebarOpen ? `${sidebarWidth + 16}px` : "16px" }}>
-        <div className="mb-1.5 font-medium text-foreground">Health</div>
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: COLORS.healthGreen }} />
-            <span>Fresh</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: COLORS.healthYellow }} />
-            <span>Stale</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: COLORS.healthRed }} />
-            <span>Very stale</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Force graph */}
-      <ForceGraph2D
-        ref={graphRef}
-        graphData={forceGraphData}
-        width={dimensions.width}
-        height={dimensions.height}
-        backgroundColor={COLORS.bg}
-        nodeId="id"
-        nodeCanvasObject={nodeCanvasObject}
-        nodeCanvasObjectMode={() => "replace"}
-        nodePointerAreaPaint={nodePointerAreaPaint}
-        linkColor={linkColor}
-        linkWidth={1}
-        linkDirectionalArrowLength={4}
-        linkDirectionalArrowRelPos={1}
-        linkDirectionalArrowColor={linkColor}
-        linkCurvature={0.15}
-        onNodeClick={handleNodeClick}
-        onNodeHover={handleNodeHover}
-        onBackgroundClick={handleBackgroundClick}
-        enableZoomInteraction={true}
-        enablePanInteraction={true}
-        enableNodeDrag={true}
-        cooldownTime={3000}
-        d3AlphaDecay={0.02}
-        d3VelocityDecay={0.3}
+    <div className="relative h-full w-full">
+    <div className="absolute -inset-4 flex overflow-hidden">
+      <CategorySidebar
+        categoryConfig={CATEGORY_CONFIG}
+        categoryGroups={categoryGroups}
+        activeCategoryFilter={activeCategoryFilter}
+        onCategoryFilterChange={setActiveCategoryFilter}
+        selectedNode={selectedNode}
+        onSelectNode={setSelectedNode}
+        searchQuery={searchQuery}
+        onSearchQueryChange={setSearchQuery}
       />
 
-      {/* Right sidebar */}
-      {sidebarOpen && selectedNode && (
-        <div
-          className="absolute right-0 top-0 z-20 h-full border-l border-border bg-card overflow-y-auto scrollbar-thin"
-          style={{ width: `${sidebarWidth}px` }}
-        >
-          <div className="p-4 space-y-4">
-            {/* Header */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold text-foreground">
-                  {selectedNode.id}
-                </h2>
-                {selectedNode.healthStatus && (
-                  <span
-                    className="h-2.5 w-2.5 rounded-full"
-                    style={{
-                      backgroundColor:
-                        selectedNode.healthStatus === "green"
-                          ? COLORS.healthGreen
-                          : selectedNode.healthStatus === "yellow"
-                            ? COLORS.healthYellow
-                            : COLORS.healthRed,
-                    }}
-                  />
-                )}
-              </div>
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header bar */}
+        <div className="h-[44px] border-b border-border px-4 flex items-center justify-between flex-shrink-0 bg-card">
+          <div className="flex items-center gap-3">
+            <h1 className="text-sm font-semibold text-foreground">Ontology Explorer</h1>
+            <span className="text-xs text-muted-foreground">{filteredNodes.length} types</span>
+            {activeCategoryFilter && (
               <button
-                onClick={() => setSelectedNode(null)}
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setActiveCategoryFilter(null)}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors"
+                style={{ backgroundColor: CATEGORY_CONFIG[activeCategoryFilter].color + "25", color: CATEGORY_CONFIG[activeCategoryFilter].color }}
               >
-                <X size={16} />
+                {CATEGORY_CONFIG[activeCategoryFilter].label}
+                <X size={10} />
               </button>
-            </div>
-
-            {/* Description */}
-            {selectedNode.description && (
-              <p className="text-xs text-muted-foreground">
-                {selectedNode.description}
-              </p>
             )}
+          </div>
+          <div className="flex items-center gap-1">
+            {([["list", LayoutGrid], ["graph", Share2]] as const).map(([mode, Icon]) => (
+              <button
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${
+                  viewMode === mode ? "bg-[#2D72D2] text-white" : "text-muted-foreground hover:text-foreground hover:bg-[#394B59]"
+                }`}
+                title={`${mode.charAt(0).toUpperCase() + mode.slice(1)} view`}
+              >
+                <Icon size={14} />
+              </button>
+            ))}
+          </div>
+        </div>
 
-            {/* Stats */}
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <div className="rounded-md border border-border bg-background p-2">
-                <div className="text-muted-foreground">Fields</div>
-                <div className="text-lg font-semibold text-foreground">
-                  {selectedNode.fieldCount}
-                </div>
+        <div ref={graphContainerRef} className="flex-1 relative overflow-hidden" style={{ backgroundColor: viewMode === "graph" ? COLORS.bg : undefined }}>
+          {viewMode === "list" ? (
+            <TypeCardGrid
+              nodes={filteredNodes}
+              enrichedNodes={enrichedNodes}
+              selectedNode={selectedNode}
+              onSelectNode={setSelectedNode}
+              categoryConfig={CATEGORY_CONFIG}
+            />
+          ) : (
+            <>
+              <ForceGraph2D
+                ref={graphRef}
+                graphData={forceGraphData}
+                width={dimensions.width}
+                height={dimensions.height}
+                backgroundColor={COLORS.bg}
+                nodeId="id"
+                nodeCanvasObject={canvas.nodeCanvasObject}
+                nodeCanvasObjectMode={() => "replace"}
+                nodePointerAreaPaint={canvas.nodePointerAreaPaint}
+                linkColor={canvas.linkColor}
+                linkWidth={canvas.linkWidth}
+                linkDirectionalArrowLength={4}
+                linkDirectionalArrowRelPos={1}
+                linkDirectionalArrowColor={canvas.linkColor}
+                linkCurvature={0}
+                linkCanvasObject={canvas.linkCanvasObject}
+                linkCanvasObjectMode={() => "after"}
+                linkHoverPrecision={6}
+                onNodeClick={canvas.handleNodeClick}
+                onNodeHover={canvas.handleNodeHover}
+                onLinkHover={canvas.handleLinkHover}
+                onNodeDragEnd={canvas.handleNodeDragEnd}
+                onBackgroundClick={canvas.handleBackgroundClick}
+                enableZoomInteraction={true}
+                enablePanInteraction={true}
+                enableNodeDrag={true}
+                cooldownTime={3000}
+                d3AlphaDecay={0.05}
+                d3VelocityDecay={0.6}
+              />
+              <div className="absolute left-4 bottom-4 z-10 flex flex-col gap-1">
+                {[
+                  { icon: ZoomIn, handler: canvas.handleZoomIn, title: "Zoom in" },
+                  { icon: ZoomOut, handler: canvas.handleZoomOut, title: "Zoom out" },
+                  { icon: Maximize2, handler: canvas.handleZoomFit, title: "Fit to view" },
+                  { icon: Pin, handler: canvas.handleUnpinAll, title: "Unpin all nodes" },
+                ].map(({ icon: Icon, handler, title }) => (
+                  <button key={title} onClick={handler} className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:bg-[#394B59] hover:border-[#5F6B7C] hover:text-foreground active:bg-[#2D72D2]/30 transition-colors" title={title}>
+                    <Icon size={16} />
+                  </button>
+                ))}
               </div>
-              <div className="rounded-md border border-border bg-background p-2">
-                <div className="text-muted-foreground">Referenced by</div>
-                <div className="text-lg font-semibold text-foreground">
-                  {selectedNode.incomingEdges.length}
-                </div>
-              </div>
-            </div>
-
-            {/* Fields list */}
-            <div>
-              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                Fields
-              </h3>
-              <div className="space-y-0.5">
-                {selectedNode.fields.map((f) => {
-                  const isRelation = enrichedNodes.some((n) => n.id === f.typeName);
-                  return (
-                    <div
-                      key={f.name}
-                      className="flex items-center justify-between rounded px-2 py-1 text-xs hover:bg-background"
-                    >
-                      <span className="font-mono text-foreground">{f.name}</span>
-                      <span
-                        className={`font-mono ${
-                          isRelation
-                            ? "text-[#2D72D2] cursor-pointer hover:underline"
-                            : "text-muted-foreground"
-                        }`}
-                        onClick={() => {
-                          if (isRelation) {
-                            const target = enrichedNodes.find(
-                              (n) => n.id === f.typeName
-                            );
-                            if (target) setSelectedNode(target);
-                          }
-                        }}
-                      >
-                        {f.typeName}
-                      </span>
+              <div className="absolute right-4 bottom-4 z-10 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+                <div className="mb-1.5 font-medium text-foreground">Health</div>
+                <div className="flex flex-col gap-1">
+                  {[{ color: COLORS.healthGreen, label: "Fresh" }, { color: COLORS.healthYellow, label: "Stale" }, { color: COLORS.healthRed, label: "Very stale" }].map(({ color, label }) => (
+                    <div key={label} className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                      <span>{label}</span>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Incoming references */}
-            {selectedNode.incomingEdges.length > 0 && (
-              <div>
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                  Referenced by
-                </h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {selectedNode.incomingEdges.map((src) => (
-                    <button
-                      key={src}
-                      onClick={() => {
-                        const node = enrichedNodes.find((n) => n.id === src);
-                        if (node) setSelectedNode(node);
-                      }}
-                      className="rounded border border-border bg-background px-2 py-0.5 text-xs font-mono text-[#2D72D2] hover:bg-secondary transition-colors"
-                    >
-                      {src}
-                    </button>
                   ))}
                 </div>
               </div>
-            )}
-
-            {/* Health details */}
-            {selectedNode.healthStatus && (
-              <div>
-                <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                  Data Health
-                </h3>
-                <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2 text-xs">
-                  <span
-                    className="h-2 w-2 rounded-full"
-                    style={{
-                      backgroundColor:
-                        selectedNode.healthStatus === "green"
-                          ? COLORS.healthGreen
-                          : selectedNode.healthStatus === "yellow"
-                            ? COLORS.healthYellow
-                            : COLORS.healthRed,
-                    }}
-                  />
-                  <span className="text-foreground">
-                    {selectedNode.healthStatus === "green"
-                      ? "Data is fresh"
-                      : selectedNode.healthStatus === "yellow"
-                        ? "Data is stale"
-                        : "Data is very stale"}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
+      </div>
+
+      {selectedNode && (
+        <DetailPanel
+          selectedNode={selectedNode}
+          onClose={() => setSelectedNode(null)}
+          onSelectNode={setSelectedNode}
+          enrichedNodes={enrichedNodes}
+          categoryConfig={CATEGORY_CONFIG}
+          getCategoryForType={(name) => adapter.getCategoryForType(name)}
+          entityConfig={entityConfig}
+          recentRecords={recentRecords}
+        />
       )}
+    </div>
     </div>
   );
 }
