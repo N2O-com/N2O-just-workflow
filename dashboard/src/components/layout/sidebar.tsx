@@ -7,6 +7,7 @@ import {
   Activity,
   Network,
   Radio,
+  BarChart3,
   Sparkles,
   PanelLeftOpen,
   PanelLeftClose,
@@ -21,6 +22,7 @@ export const navItems = [
   { href: "/tasks", icon: ListTodo, label: "Tasks" },
   { href: "/streams", icon: Radio, label: "Streams" },
   { href: "/ontology", icon: Network, label: "Ontology" },
+  { href: "/capacity", icon: BarChart3, label: "Capacity" },
 ] as const;
 
 export function Sidebar({
