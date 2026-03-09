@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import type { DailyPoint } from "./capacity-data";
 import { getPS, SUPPLY } from "./capacity-utils";
-import type { FlatProject } from "./project-sidebar";
+import type { FlatProject } from "./capacity-utils";
 
 // ─── Probability legend colors ───
 

@@ -4,7 +4,7 @@
 
 | Field | Value |
 |-------|-------|
-| Status | Draft |
+| Status | Active |
 | Owner | Wiley |
 | Last Updated | 2026-03-08 |
 | Depends On | 01-capacity-planner-v1.md |
@@ -39,19 +39,24 @@ The current layout has two places showing project names: the ProjectSidebar (250
 │ Controls │  (gantt header / tick labels)│           │
 │ (fixed)  ├─────────────────────────────┤  Detail   │
 │          │  Shared scroll container     │  Panel    │
-│ Stage    │  ┌─────────┬───────────────┐│           │
-│ chips    │  │ Tree    │ Gantt bars    ││           │
-│          │  │ row     │ row           ││           │
-│          │  │ co hdr  │ (empty/agg)   ││           │
-│          │  │ row     │ row           ││           │
+│          │  ┌─────────┬───────────────┐│           │
+│          │  │ Stg chip│ (divider)     ││           │
+│          │  │ co hdr  │ (empty)       ││           │
+│          │  │ proj    │ ████ bar ████ ││           │
+│          │  │ proj    │ ██ bar ██     ││           │
+│          │  │ Stg chip│ (divider)     ││           │
+│          │  │ co hdr  │ (empty)       ││           │
+│          │  │ proj    │ ███ bar ███   ││           │
 │          │  └─────────┴───────────────┘│           │
 │          ├─────────────────────────────┤           │
-│          │  Demand chart               │           │
+│ (blank)  │  Demand chart               │           │
 │          │  (h-scroll synced)          │           │
 ├──────────┴─────────────────────────────┴───────────┤
 │ Footer                                             │
 └────────────────────────────────────────────────────┘
 ```
+
+Stage chips are **inside** the scroll container as row-level elements — they're the stage header rows that visually separate groups of projects. They scroll with the project rows and align with the gantt area. The bottom-left corner (at demand chart height) is blank.
 
 ### Key decisions
 
@@ -59,7 +64,7 @@ The current layout has two places showing project names: the ProjectSidebar (250
 
 2. **Single scroll container.** The sidebar tree and gantt bars are in the same vertically-scrolling div. The tree is `position: sticky; left: 0` so it stays visible during horizontal scroll. This eliminates the label↔gantt vertical scroll sync entirely.
 
-3. **Sidebar controls stay fixed.** The header (PROJECTS label, dropdowns) and stage chips render above the scroll container, not inside it.
+3. **Controls fixed, stage chips inline.** The header (PROJECTS label, dropdowns) renders above the scroll container as a fixed bar. Stage chips render **inside** the scroll container as row-level dividers that align with the gantt — they scroll with the project list. The bottom-left corner (at demand chart height) is blank.
 
 4. **Company/stage headers span the gantt area.** In the gantt column, company header rows are empty (no bar). Stage header rows render as thin colored dividers spanning the full width, providing visual grouping context.
 
@@ -71,26 +76,32 @@ The current layout has two places showing project names: the ProjectSidebar (250
 
 ### What changes per file
 
-- **project-sidebar.tsx** → **Deleted.** Its rendering logic (5 grouping modes, CompanyGroup, ProjectRow, StageHeader, dropdowns) moves into a new component that renders inside the shared scroll container.
+- **project-sidebar.tsx** → **Sub-components exported.** CheckIcon, Chk, StageChips, StageHeader, StageDivider, ViewsDropdown, GroupByDropdown, FilterDropdown exported for reuse in gantt-timeline. Main component retained but no longer imported by page.tsx.
 - **gantt-timeline.tsx** → **Major refactor.** Removes the label column. Adopts a "row list" model where it receives a structured row list (project rows + header rows) and renders them in a single scroll container. Tree content renders as sticky-left within each row.
 - **page.tsx** → **Moderate changes.** Removes `<ProjectSidebar>` from the layout. Passes sidebar props directly to `<GanttTimeline>`. The outer layout becomes `GanttTimeline | DetailPanel`.
 - **demand-chart.tsx** → **No changes.** Receives the same props.
-- **capacity-utils.ts** → **No changes.** Same utilities.
+- **capacity-utils.ts** → **New utilities.** Added `buildRowList()`, `LayoutRow` type, row height constants, moved `FlatProject` type and `isAtCross` here.
 - **capacity-data.ts** → **No changes.**
 
 ### Revert strategy
 
-Create a git commit with the current working state before starting. A single `git revert <sha>` or `git checkout <sha> -- dashboard/src/app/capacity/` restores everything. No database migrations or external state changes.
+Pre-merge state committed at `ed60c01`. If the unified layout doesn't work out, revert with:
+
+```bash
+git checkout ed60c01 -- dashboard/src/app/capacity/
+```
+
+This restores every capacity file to the pre-merge state. No database migrations or external state involved — purely frontend files. We plan to revert if the result doesn't feel right and revisit the approach.
 
 ---
 
 ## Steps
 
-1. **Commit current state** — clean snapshot for easy revert.
-2. **Build the row model** — Create a `buildRowList()` utility that takes the grouped/filtered companies and produces an ordered array of typed rows: `{ type: 'stage-header' | 'company-header' | 'project', ... }`. This is the single source of truth for what renders top-to-bottom.
-3. **Merge tree into gantt** — Refactor gantt-timeline.tsx to render the row list in a single scroll container. Each row renders sidebar content (sticky-left) + gantt content side by side. Move dropdown controls, stage chips, and company/project tree rendering from project-sidebar.tsx into this structure.
-4. **Remove ProjectSidebar** — Delete the import from page.tsx. Remove the separate `<ProjectSidebar>` element. Pass all sidebar state/callbacks to GanttTimeline.
-5. **Fix demand chart alignment** — Update the demand axis labels area to match the new sidebar width.
+1. ~~**Commit current state**~~ — Done: `ed60c01`.
+2. ~~**Build the row model**~~ — Done. Added `LayoutRow` type union, `buildRowList()`, row height constants, `FlatProject` type, and `isAtCross` helper to capacity-utils.ts.
+3. ~~**Merge tree into gantt**~~ — Done. Rewrote gantt-timeline.tsx with single shared scroll container, sticky-left sidebar cells, fixed header with dropdowns/stage chips, and two hover handlers (gantt + demand).
+4. ~~**Remove ProjectSidebar**~~ — Done. Removed import from page.tsx, simplified to `GanttTimeline | DetailPanel` layout. Sub-components in project-sidebar.tsx exported for reuse.
+5. ~~**Fix demand chart alignment**~~ — Done. Blank corner on left at sidebar width, demand chart on right, axis labels in corner, h-scroll synced.
 6. **Visual polish** — Verify all 5 grouping modes work, hover highlighting crosses tree↔bar, expand/collapse hides both label and bar.
 
 ---

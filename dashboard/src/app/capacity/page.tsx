@@ -4,14 +4,13 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import type { DailyPoint } from "./capacity-data";
 import { DATA } from "./capacity-data";
 import {
-  SUPPLY, TIER_META, buildDaily, flattenProjects,
+  SUPPLY, buildDaily, flattenProjects,
   categorizeCompanies, DEFAULT_STAGE_ORDER, DEFAULT_STAGE_VISIBLE,
   DEFAULT_GROUP_ORDER, DEFAULT_GROUP_ENABLED, DEFAULT_GROUP_SORT,
-  type PipelineStage, type StagedGroup, type GroupDim, type DimSortKey,
+  type FlatProject, type PipelineStage, type StagedGroup, type GroupDim, type DimSortKey,
   type ViewPreset,
 } from "./capacity-utils";
 import { CapacityHeader } from "./capacity-header";
-import { ProjectSidebar, type FlatProject } from "./project-sidebar";
 import { GanttTimeline } from "./gantt-timeline";
 import { DetailPanel } from "./detail-panel";
 
@@ -61,7 +60,6 @@ export default function CapacityPage() {
   const active = useMemo(() => {
     let list = allProjects.filter((p) => enabled[p.id]);
     if (viewFilter === "all") {
-      // Filter by visible stages — only include projects from companies in visible stage groups
       const visibleCoIds = new Set(stagedCompanies.flatMap((g) => g.companies.map((c) => c.id)));
       list = list.filter((p) => visibleCoIds.has(p.companyId));
     } else if (viewFilter === "clients-active") {
@@ -77,7 +75,6 @@ export default function CapacityPage() {
     return list;
   }, [allProjects, enabled, viewFilter, stagedCompanies]);
 
-  // Companies/projects visible in the sidebar (matches the viewFilter)
   const filteredCompanies = useMemo(() => {
     if (viewFilter === "all") {
       return stagedCompanies.flatMap((g) => g.companies);
@@ -92,20 +89,6 @@ export default function CapacityPage() {
     }
     return companies.filter((co) => co.id === viewFilter);
   }, [companies, viewFilter, stagedCompanies]);
-
-  const sortedActive = useMemo(() => {
-    // Build company position map from filteredCompanies (reflects stage order)
-    const coPos = new Map<string, number>();
-    filteredCompanies.forEach((co, i) => coPos.set(co.id, i));
-    const sorted = [...active];
-    sorted.sort((a, b) => {
-      const posA = coPos.get(a.companyId) ?? 999;
-      const posB = coPos.get(b.companyId) ?? 999;
-      if (posA !== posB) return posA - posB;
-      return new Date(a.start).getTime() - new Date(b.start).getTime();
-    });
-    return sorted;
-  }, [active, filteredCompanies]);
 
   const daily = useMemo(() => buildDaily(active), [active]);
   const peakRaw = Math.max(...daily.map((d) => d.raw), 0);
@@ -195,7 +178,7 @@ export default function CapacityPage() {
       />
 
       <div className="flex flex-1 overflow-hidden min-h-0">
-        <ProjectSidebar
+        <GanttTimeline
           companies={companies}
           filteredCompanies={filteredCompanies}
           stagedCompanies={stagedCompanies}
@@ -210,6 +193,9 @@ export default function CapacityPage() {
           viewFilter={viewFilter}
           stageOrder={stageOrder}
           stageVisible={stageVisible}
+          groupOrder={groupOrder}
+          groupEnabled={groupEnabled}
+          groupSort={groupSort}
           onToggleEn={toggleEn}
           onToggleGroup={toggleGroup}
           onToggleExpand={toggleExpand}
@@ -220,26 +206,14 @@ export default function CapacityPage() {
           onSetViewFilter={setViewFilter}
           onSetStageOrder={setStageOrder}
           onSetStageVisible={setStageVisible}
-          groupOrder={groupOrder}
-          groupEnabled={groupEnabled}
-          groupSort={groupSort}
           onSetGroupOrder={setGroupOrder}
           onSetGroupEnabled={setGroupEnabled}
           onSetGroupSort={setGroupSort}
           onApplyView={applyView}
-        />
-
-        <GanttTimeline
-          active={sortedActive}
+          active={active}
           daily={daily}
           gran={gran}
-          hovProj={hovProj}
-          hovCompany={hovCompany}
-          selectedId={selectedId}
-          hoverData={hoverData}
           onHoverChange={(data, _x) => setHoverData(data)}
-          onSetHovProj={setHovProj}
-          onSelectProject={selectProject}
         />
 
         {showDetail && (

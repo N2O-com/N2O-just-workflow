@@ -1,7 +1,7 @@
 // Capacity planner utility functions
 // Extracted from platform/reference/n2o-capacity-planner.jsx
 
-import type { Project, DailyPoint, Tick, ProbStyle, TierMeta } from "./capacity-data";
+import type { Project, Company, DailyPoint, Tick, ProbStyle, TierMeta } from "./capacity-data";
 import { DATA } from "./capacity-data";
 
 // ─── Colors (Palantir theme adapted) ───
@@ -89,7 +89,13 @@ export function compareProjects(a: Project, b: Project, field: SortField, dir: "
 
 export const ROW_H = 28;
 export const ROW_GAP = 2;
-export const LABEL_W_DEFAULT = 150;
+export const LABEL_W_DEFAULT = 220;
+
+// Row heights for unified layout
+export const STAGE_HEADER_H = 28;
+export const COMPANY_HEADER_H = 30;
+export const STAGE_DIVIDER_H = 20;
+export const PROJECT_ROW_H = ROW_H + ROW_GAP; // 30
 
 // ─── Timeline config ───
 
@@ -515,14 +521,177 @@ export function groupProjectsByStage<T extends { start: string; end: string; tie
 
 // ─── Flatten projects helper ───
 
+export type FlatProject = Project & { client: string; companyId: string };
+
 export function flattenProjects(
   companies: { id: string; name: string; projects: Project[] }[]
-): (Project & { client: string; companyId: string })[] {
-  const result: (Project & { client: string; companyId: string })[] = [];
+): FlatProject[] {
+  const result: FlatProject[] = [];
   for (const co of companies) {
     for (const p of co.projects) {
       result.push({ ...p, client: co.name, companyId: co.id });
     }
   }
   return result;
+}
+
+// ─── Crosshair hit-test ───
+
+export function isAtCross(p: { start: string; end: string }, hoverData: DailyPoint | null): boolean {
+  if (!hoverData) return false;
+  return new Date(p.start) <= hoverData.date && new Date(p.end) >= hoverData.date;
+}
+
+// ─── Unified layout row model ───
+
+export type LayoutRow =
+  | { type: "stage-header"; stage: PipelineStage }
+  | { type: "company-header"; company: Company; projIds: string[] }
+  | { type: "stage-divider"; stage: PipelineStage }
+  | { type: "project"; project: FlatProject; indent: number; showClient: boolean };
+
+export function rowHeight(row: LayoutRow): number {
+  switch (row.type) {
+    case "stage-header": return STAGE_HEADER_H;
+    case "company-header": return COMPANY_HEADER_H;
+    case "stage-divider": return STAGE_DIVIDER_H;
+    case "project": return PROJECT_ROW_H;
+  }
+}
+
+export function buildRowList(opts: {
+  stagedCompanies: StagedGroup[];
+  filteredCompanies: Company[];
+  allProjects: FlatProject[];
+  companies: Company[];
+  groupOrder: GroupDim[];
+  groupEnabled: Record<GroupDim, boolean>;
+  groupSort: Record<GroupDim, DimSortKey>;
+  viewFilter: string;
+  expanded: Record<string, boolean>;
+}): LayoutRow[] {
+  const {
+    stagedCompanies, filteredCompanies, allProjects, companies,
+    groupOrder, groupEnabled, groupSort, viewFilter, expanded,
+  } = opts;
+
+  const showStages = viewFilter === "all";
+  const enabledDims = groupOrder.filter((d) => groupEnabled[d] && d !== "project");
+  const dimKey = enabledDims.join(",");
+  const nowMs = Date.now();
+  const rows: LayoutRow[] = [];
+
+  // Build stage lookup
+  const categorized = categorizeCompanies(companies);
+  const coStageMap = new Map<string, PipelineStage>();
+  for (const [stage, cos] of Object.entries(categorized) as [PipelineStage, Company[]][]) {
+    for (const co of cos) coStageMap.set(co.id, stage);
+  }
+
+  function addCompanyGroup(co: Company, indent: number) {
+    const coProjs = sortProjectsByKey(
+      co.projects
+        .map((p) => allProjects.find((ap) => ap.id === p.id))
+        .filter((p): p is FlatProject => p != null),
+      groupSort.project,
+      nowMs,
+    );
+    if (coProjs.length === 0) return;
+    const projIds = coProjs.map((p) => p.id);
+    rows.push({ type: "company-header", company: co, projIds });
+    const expKey = `co-${co.id}`;
+    if (expanded[expKey] !== false) {
+      for (const p of coProjs) {
+        rows.push({ type: "project", project: p, indent, showClient: false });
+      }
+    }
+  }
+
+  // When filter is not "all", always flat company groups
+  if (!showStages) {
+    for (const co of filteredCompanies) addCompanyGroup(co, 34);
+    return rows;
+  }
+
+  // Case 1: [stage, client]
+  if (dimKey === "stage,client") {
+    for (const group of sortStagedGroups(stagedCompanies, groupSort.stage, nowMs)) {
+      rows.push({ type: "stage-header", stage: group.stage });
+      for (const co of sortCompaniesByKey([...group.companies], groupSort.client, nowMs)) {
+        addCompanyGroup(co, 34);
+      }
+    }
+    return rows;
+  }
+
+  // Case 2: [client, stage]
+  if (dimKey === "client,stage") {
+    const visibleCos = sortCompaniesByKey(
+      stagedCompanies.flatMap((g) => g.companies),
+      groupSort.client,
+      nowMs,
+    );
+    for (const co of visibleCos) {
+      const coProjs = sortProjectsByKey(
+        co.projects
+          .map((p) => allProjects.find((ap) => ap.id === p.id))
+          .filter((p): p is FlatProject => p != null),
+        groupSort.project,
+        nowMs,
+      );
+      if (coProjs.length === 0) continue;
+      const projIds = coProjs.map((p) => p.id);
+      rows.push({ type: "company-header", company: co, projIds });
+      const expKey = `co-${co.id}`;
+      if (expanded[expKey] !== false) {
+        const coStage = coStageMap.get(co.id) ?? "prospective";
+        rows.push({ type: "stage-divider", stage: coStage });
+        for (const p of coProjs) {
+          rows.push({ type: "project", project: p, indent: 34, showClient: false });
+        }
+      }
+    }
+    return rows;
+  }
+
+  // Case 3: [stage] — stage headers + flat projects
+  if (dimKey === "stage") {
+    for (const group of sortStagedGroups(stagedCompanies, groupSort.stage, nowMs)) {
+      const projs = group.companies.flatMap((co) =>
+        co.projects
+          .map((p) => allProjects.find((ap) => ap.id === p.id))
+          .filter((p): p is FlatProject => p != null)
+      );
+      if (projs.length === 0) continue;
+      rows.push({ type: "stage-header", stage: group.stage });
+      for (const p of sortProjectsByKey([...projs], groupSort.project, nowMs)) {
+        rows.push({ type: "project", project: p, indent: 14, showClient: true });
+      }
+    }
+    return rows;
+  }
+
+  // Case 4: [client] — company groups, no stages
+  if (dimKey === "client") {
+    const visibleCos = sortCompaniesByKey(
+      stagedCompanies.flatMap((g) => g.companies),
+      groupSort.client,
+      nowMs,
+    );
+    for (const co of visibleCos) addCompanyGroup(co, 34);
+    return rows;
+  }
+
+  // Case 5: [] — flat project list
+  const allVisible = stagedCompanies.flatMap((g) =>
+    g.companies.flatMap((co) =>
+      co.projects
+        .map((p) => allProjects.find((ap) => ap.id === p.id))
+        .filter((p): p is FlatProject => p != null)
+    )
+  );
+  for (const p of sortProjectsByKey([...allVisible], groupSort.project, nowMs)) {
+    rows.push({ type: "project", project: p, indent: 14, showClient: true });
+  }
+  return rows;
 }

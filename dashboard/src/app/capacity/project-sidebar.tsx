@@ -8,8 +8,8 @@ import {
   DEFAULT_GROUP_ORDER, DEFAULT_GROUP_ENABLED, DEFAULT_GROUP_SORT,
   GROUP_DIM_META, DIM_SORT_OPTIONS,
   sortProjectsByKey, sortCompaniesByKey, sortStagedGroups,
-  VIEW_PRESETS, detectActiveView,
-  type PipelineStage, type StagedGroup, type GroupDim, type DimSortKey,
+  VIEW_PRESETS, detectActiveView, isAtCross,
+  type FlatProject, type PipelineStage, type StagedGroup, type GroupDim, type DimSortKey,
   type ViewPreset,
 } from "./capacity-utils";
 import {
@@ -36,7 +36,7 @@ import {
 
 // ─── SVG primitives ───
 
-function CheckIcon({ size }: { size: number }) {
+export function CheckIcon({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 12 12" fill="none" className="block">
       <path d="M2.5 6L5 8.5L9.5 3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
@@ -44,7 +44,7 @@ function CheckIcon({ size }: { size: number }) {
   );
 }
 
-function DashIcon({ size }: { size: number }) {
+export function DashIcon({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 12 12" fill="none" className="block">
       <path d="M3 6H9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -52,7 +52,7 @@ function DashIcon({ size }: { size: number }) {
   );
 }
 
-function ChevronIcon({ open, color }: { open: boolean; color: string }) {
+export function ChevronIcon({ open, color }: { open: boolean; color: string }) {
   return (
     <svg
       width="10"
@@ -69,7 +69,7 @@ function ChevronIcon({ open, color }: { open: boolean; color: string }) {
 
 // ─── Checkbox ───
 
-function Chk({
+export function Chk({
   on,
   indeterminate,
   color,
@@ -108,8 +108,6 @@ function Chk({
 }
 
 // ─── Types ───
-
-export type FlatProject = Project & { client: string; companyId: string };
 
 interface ProjectSidebarProps {
   companies: Company[];
@@ -256,7 +254,7 @@ function SortableChip({
   );
 }
 
-function StageChips({
+export function StageChips({
   stageOrder,
   stageVisible,
   onSetStageOrder,
@@ -414,7 +412,7 @@ function CompanyGroup({
 
 // ─── Stage section header ───
 
-function StageHeader({ stage }: { stage: PipelineStage }) {
+export function StageHeader({ stage }: { stage: PipelineStage }) {
   const meta = STAGE_META[stage];
   return (
     <div className="sticky top-0 z-10 flex items-center gap-2 px-2.5 pt-2 pb-1 bg-[#1C2127]">
@@ -432,7 +430,7 @@ function StageHeader({ stage }: { stage: PipelineStage }) {
 
 // ─── Stage divider (thin, for use inside company groups) ───
 
-function StageDivider({ stage }: { stage: PipelineStage }) {
+export function StageDivider({ stage }: { stage: PipelineStage }) {
   const meta = STAGE_META[stage];
   return (
     <div className="flex items-center gap-1.5 px-4 pt-1.5 pb-0.5">
@@ -449,7 +447,7 @@ function StageDivider({ stage }: { stage: PipelineStage }) {
 
 // ─── Views dropdown ───
 
-function ViewsDropdown({
+export function ViewsDropdown({
   groupOrder,
   groupEnabled,
   groupSort,
@@ -634,7 +632,7 @@ function SortableGroupChip({
   );
 }
 
-function GroupByDropdown({
+export function GroupByDropdown({
   groupOrder,
   groupEnabled,
   groupSort,
@@ -757,11 +755,6 @@ function GroupByDropdown({
 }
 
 // ─── Main sidebar ───
-
-function isAtCross(p: { start: string; end: string }, hoverData: DailyPoint | null): boolean {
-  if (!hoverData) return false;
-  return new Date(p.start) <= hoverData.date && new Date(p.end) >= hoverData.date;
-}
 
 export function ProjectSidebar({
   companies,
@@ -1070,7 +1063,7 @@ const PROJECT_FILTERS: { key: string; label: string; desc: string }[] = [
   { key: "internal", label: "Internal", desc: "N2O internal projects" },
 ];
 
-function FilterDropdown({
+export function FilterDropdown({
   companies,
   viewFilter,
   onSetViewFilter,

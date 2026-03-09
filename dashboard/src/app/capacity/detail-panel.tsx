@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import type { Project, Company } from "./capacity-data";
 import { getPS, TIER_META, fmtShort, T_START } from "./capacity-utils";
-import type { FlatProject } from "./project-sidebar";
+import type { FlatProject } from "./capacity-utils";
 
 // ─── Field component ───
 
