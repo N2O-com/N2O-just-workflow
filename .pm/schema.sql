@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS developers (
     skill_testing INTEGER,
     skill_debugging INTEGER,
 
+    -- External time-tracking provider user ID (currently Toggl)
+    time_tracking_user_id INTEGER,
+
     -- Thinking style / strengths (free text, manager-written)
     strengths TEXT,                     -- e.g., 'Strong systems thinker, good at decomposition'
     growth_areas TEXT,                  -- e.g., 'Tends to over-engineer, needs more testing discipline'
