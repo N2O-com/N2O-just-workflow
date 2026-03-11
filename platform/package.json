@@ -11,15 +11,20 @@
   },
   "dependencies": {
     "@apollo/server": "^5.4.0",
+    "@as-integrations/express5": "^1.1.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jsonwebtoken": "^9.0.10",
     "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
     "dataloader": "^2.2.3",
     "dotenv": "^16.4.7",
+    "express": "^5.2.1",
     "graphql": "^16.9.0",
     "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

@@ -1,12 +1,29 @@
 // HTTP-based SQL executor using the Supabase Management API.
 // Avoids IPv6/pooler connectivity issues by going through HTTPS (IPv4).
+// Env vars are read lazily (inside functions) so dotenv has time to load.
 
-const SUPABASE_REF = process.env.SUPABASE_REF ?? "mktnhfbpvksnyfzipuph";
-const SUPABASE_ACCESS_TOKEN =
-  process.env.SUPABASE_ACCESS_TOKEN ??
-  "sbp_0432018dd9867db471847a730df45a97cc76f586";
+/**
+ * Validates that required Supabase env vars are set.
+ * Call at server startup — not at import time (so tests can import SupabasePool without env vars).
+ */
+export function validateDbConfig(): void {
+  if (!process.env.SUPABASE_REF) {
+    throw new Error("Missing required environment variable: SUPABASE_REF");
+  }
+  if (!process.env.SUPABASE_ACCESS_TOKEN) {
+    throw new Error(
+      "Missing required environment variable: SUPABASE_ACCESS_TOKEN"
+    );
+  }
+}
 
-const QUERY_URL = `https://api.supabase.com/v1/projects/${SUPABASE_REF}/database/query`;
+function getQueryUrl(): string {
+  return `https://api.supabase.com/v1/projects/${process.env.SUPABASE_REF}/database/query`;
+}
+
+function getAccessToken(): string {
+  return process.env.SUPABASE_ACCESS_TOKEN ?? "";
+}
 
 function escapeParam(val: any): string {
   if (val === null || val === undefined) return "NULL";
@@ -41,12 +58,14 @@ export class SupabasePool {
       return { rows: cached.rows };
     }
 
+    const queryUrl = getQueryUrl();
+    const accessToken = getAccessToken();
     const maxRetries = 3;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const res = await fetch(QUERY_URL, {
+      const res = await fetch(queryUrl, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${SUPABASE_ACCESS_TOKEN}`,
+          Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ query: finalSql }),
