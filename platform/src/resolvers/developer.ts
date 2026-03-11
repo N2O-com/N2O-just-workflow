@@ -115,6 +115,23 @@ export const developerResolvers = {
       }));
     },
 
+    notificationPreferences: async (dev: any, _: any, ctx: Context) => {
+      const row = await queryOne(
+        ctx.db,
+        "SELECT * FROM notification_preferences WHERE developer = ?",
+        [dev.name]
+      );
+      if (!row) return null;
+      return {
+        enabled: row.enabled === true || row.enabled === 1,
+        digestTime: row.digest_time,
+        digestDays: row.digest_days,
+        quietStart: row.quiet_start,
+        quietEnd: row.quiet_end,
+        timezone: row.timezone,
+      };
+    },
+
     velocity: async (dev: any, _: any, ctx: Context) => {
       const row = await queryOne(
         ctx.db,

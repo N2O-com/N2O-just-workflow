@@ -103,6 +103,24 @@ export const coreTypeDefs = `#graphql
 
     """Bulk-reset stale tasks (red status, started >48h ago) back to pending with no owner. Returns the reset tasks."""
     resolveStaleTasks: [Task!]!
+
+    # SMS companion
+    """Register phone number for SMS (admin-only). Validates E.164 format."""
+    registerPhone(developer: String!, phoneNumber: String!): Developer
+
+    """Update notification preferences (admin or self)"""
+    updateNotificationPreferences(
+      developer: String!
+      enabled: Boolean
+      digestTime: String
+      digestDays: String
+      quietStart: String
+      quietEnd: String
+      timezone: String
+    ): NotificationPreferences
+
+    """Send a test SMS to verify setup (admin-only)"""
+    sendTestSms(developer: String!): Boolean
   }
 
   # ── Core Entities ──────────────────────────────────────────
@@ -188,15 +206,27 @@ export const coreTypeDefs = `#graphql
     baselineCompetency: Float
     strengths: String
     growthAreas: String
+    accessRole: String!
+    phoneNumber: String
 
     # Relationships
     skills: [DeveloperSkill!]!
     tasks(status: String, sprint: String): [Task!]!
     availability(date: String): Availability
     context(latest: Boolean): [DeveloperContext!]!
+    notificationPreferences: NotificationPreferences
 
     # Computed
     velocity: VelocityProfile
+  }
+
+  type NotificationPreferences {
+    enabled: Boolean!
+    digestTime: String!
+    digestDays: String!
+    quietStart: String
+    quietEnd: String
+    timezone: String!
   }
 
   # ── Supporting Types ───────────────────────────────────────

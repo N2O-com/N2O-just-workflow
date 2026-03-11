@@ -36,6 +36,8 @@ export function mapDeveloper(row: any) {
     baselineCompetency: row.baseline_competency,
     strengths: row.strengths,
     growthAreas: row.growth_areas,
+    accessRole: row.access_role ?? "engineer",
+    phoneNumber: row.phone_number ?? null,
   };
 }
 

@@ -92,6 +92,8 @@ describe("mapDeveloper", () => {
       baselineCompetency: 4.0,
       strengths: "Systems thinking",
       growthAreas: "Testing",
+      accessRole: "engineer",
+      phoneNumber: null,
     });
   });
 });

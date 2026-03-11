@@ -12,6 +12,7 @@ import { analyticsResolvers } from "./analytics.js";
 import { conversationResolvers } from "./conversation.js";
 import { healthResolvers } from "./health.js";
 import { timeTrackingResolvers } from "./time-tracking.js";
+import { smsResolvers } from "./sms.js";
 
 // ── Type resolver factories for typed object references ────────────────
 
@@ -254,6 +255,7 @@ export const resolvers = {
   Mutation: {
     ...mutationResolvers.Mutation,
     ...timeTrackingResolvers.Mutation,
+    ...smsResolvers.Mutation,
   },
   Task: taskResolvers.Task,
   Sprint: sprintResolvers.Sprint,
