@@ -56,17 +56,71 @@ export const togglResolvers = {
     },
 
     togglMembers: async (_: any, __: any, ctx: Context) => {
-      const rows = await queryAll(
-        ctx.db,
-        `SELECT id, toggl_name, email, role, active FROM toggl_members ORDER BY role, toggl_name`
-      );
-      return rows.map((r: any) => ({
-        id: r.id,
-        togglName: r.toggl_name,
-        email: r.email,
-        role: r.role,
-        active: !!r.active,
-      }));
+      const token = getToken();
+      const wsId = await getWorkspaceId(token);
+      const cacheKey = "toggl:members";
+      const cached = cacheGet(cacheKey, ONE_HOUR);
+      if (cached) return cached;
+
+      // Fetch members from Toggl API (same cascade as TogglDashboard)
+      let memberList: Array<{ id: number; name: string; email: string | null }> = [];
+
+      // Try /workspaces/{id}/members first
+      try {
+        const wsMembers = await fetchToggl(
+          `${TOGGL_API_BASE}/workspaces/${wsId}/members`,
+          token
+        );
+        memberList = (wsMembers || []).map((m: any) => ({
+          id: m.user_id,
+          name: m.name || m.email?.split("@")[0] || `User ${m.user_id}`,
+          email: m.email || null,
+        }));
+      } catch {
+        // Fallback to /workspaces/{id}/users
+        try {
+          const wsUsers = await fetchToggl(
+            `${TOGGL_API_BASE}/workspaces/${wsId}/users`,
+            token
+          );
+          memberList = (wsUsers || []).map((m: any) => ({
+            id: m.id,
+            name: m.fullname || m.email?.split("@")[0] || `User ${m.id}`,
+            email: m.email || null,
+          }));
+        } catch (e) {
+          console.warn("Could not fetch workspace members:", e);
+        }
+      }
+
+      // Merge with DB records for role/active overrides (keyed by name)
+      // Gracefully handle missing table (migration may not have run)
+      const roleMap = new Map<string, { role: string; active: boolean }>();
+      try {
+        const dbRows = await queryAll(
+          ctx.db,
+          `SELECT toggl_name, role, active FROM toggl_members`
+        );
+        for (const r of dbRows as any[]) {
+          roleMap.set(r.toggl_name, { role: r.role, active: !!r.active });
+        }
+      } catch {
+        // Table doesn't exist yet — use defaults
+      }
+
+      const result = memberList.map((m) => {
+        const dbRecord = roleMap.get(m.name);
+        return {
+          id: m.id,  // Toggl user_id — matches entry.userId
+          togglName: m.name,
+          email: m.email,
+          role: dbRecord?.role ?? "developer",
+          active: dbRecord?.active ?? true,
+        };
+      });
+
+      cacheSet(cacheKey, result);
+      return result;
     },
 
     togglTimeEntries: async (_: any, args: { startDate: string; endDate: string }) => {
@@ -88,17 +142,26 @@ export const togglResolvers = {
         }
       );
 
-      // Flatten paginated response — Reports API returns array of arrays
-      const entries = (Array.isArray(data) ? data : []).flat().map((e: any) => ({
-        id: e.id,
-        description: e.description || "",
-        start: e.start,
-        stop: e.stop,
-        seconds: e.time_entries?.[0]?.seconds ?? e.dur ?? 0,
-        projectId: e.project_id,
-        tagIds: e.tag_ids || [],
-        userId: e.user_id,
-      }));
+      // Reports API returns grouped items, each with a time_entries[] sub-array.
+      // Double-loop: outer item has user_id/description/project_id/tag_ids,
+      // each time_entries[i] has id/start/stop/seconds.
+      const items = (Array.isArray(data) ? data : []).flat();
+      const entries: any[] = [];
+      for (const item of items) {
+        const subEntries = item.time_entries || [];
+        for (const te of subEntries) {
+          entries.push({
+            id: te.id,
+            description: item.description || "",
+            start: te.start,
+            stop: te.stop,
+            seconds: te.seconds ?? 0,
+            projectId: item.project_id,
+            tagIds: item.tag_ids || [],
+            userId: item.user_id,
+          });
+        }
+      }
 
       cacheSet(cacheKey, entries);
       return entries;
@@ -210,44 +273,55 @@ export const togglResolvers = {
       args: { id: number; role?: string; active?: boolean },
       ctx: Context
     ) => {
-      const existing = await queryOne(
-        ctx.db,
-        `SELECT * FROM toggl_members WHERE id = ?`,
-        [args.id]
-      );
-      if (!existing) throw new Error("Member not found");
+      // args.id is the Toggl user_id (not the DB serial PK).
+      // We need to find the member name from the cached API data, then upsert in DB.
+      const token = getToken();
+      const wsId = await getWorkspaceId(token);
 
-      const updates: string[] = [];
-      const params: any[] = [];
-
-      if (args.role !== undefined) {
-        updates.push("role = ?");
-        params.push(args.role);
+      // Resolve Toggl user_id → name by checking cached members or API
+      let memberName: string | null = null;
+      const cached = cacheGet("toggl:members", ONE_HOUR) as any[] | null;
+      if (cached) {
+        const found = cached.find((m: any) => m.id === args.id);
+        if (found) memberName = found.togglName;
       }
-      if (args.active !== undefined) {
-        updates.push("active = ?");
-        params.push(args.active);
+      if (!memberName) {
+        // Fallback: fetch from API
+        try {
+          const wsMembers = await fetchToggl(
+            `${TOGGL_API_BASE}/workspaces/${wsId}/members`,
+            token
+          );
+          const found = (wsMembers || []).find((m: any) => m.user_id === args.id);
+          if (found) memberName = found.name || found.email?.split("@")[0] || `User ${args.id}`;
+        } catch {
+          // ignore
+        }
       }
-      if (updates.length === 0) throw new Error("No fields to update");
+      if (!memberName) throw new Error("Member not found");
 
-      params.push(args.id);
+      const role = args.role ?? "developer";
+      const active = args.active ?? true;
+
+      // Upsert by toggl_name (which has a UNIQUE constraint)
       await queryAll(
         ctx.db,
-        `UPDATE toggl_members SET ${updates.join(", ")} WHERE id = ?`,
-        params
+        `INSERT INTO toggl_members (toggl_name, role, active)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (toggl_name)
+         DO UPDATE SET role = EXCLUDED.role, active = EXCLUDED.active`,
+        [memberName, role, active]
       );
 
-      const member = await queryOne(
-        ctx.db,
-        `SELECT id, toggl_name, email, role, active FROM toggl_members WHERE id = ?`,
-        [args.id]
-      );
+      // Invalidate members cache so next fetch picks up the change
+      cacheSet("toggl:members", null);
+
       return {
-        id: member.id,
-        togglName: member.toggl_name,
-        email: member.email,
-        role: member.role,
-        active: !!member.active,
+        id: args.id,  // Return the Toggl user_id
+        togglName: memberName,
+        email: null,
+        role,
+        active,
       };
     },
   },
