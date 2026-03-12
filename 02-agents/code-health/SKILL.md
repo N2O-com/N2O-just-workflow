@@ -99,8 +99,6 @@ include:
   - "src/**"
   - "packages/**"
   - "apps/**"
-  - "platform/**"
-  - "dashboard/**"
 
 exclude:
   - "node_modules/**"
@@ -314,8 +312,6 @@ include:
   - "src/**"
   - "packages/**"
   - "apps/**"
-  - "platform/**"
-  - "dashboard/**"
 
 exclude:
   - "node_modules/**"
