@@ -148,109 +148,65 @@ export const timeTrackingResolvers = {
       return result;
     },
 
-    timeTrackingEntries: async (_: any, args: { startDate: string; endDate: string }) => {
-      const token = getToken();
-      const wsId = await getWorkspaceId(token);
-      const cacheKey = `toggl:entries:${args.startDate}:${args.endDate}`;
-      const cached = cacheGet(cacheKey, FOUR_MIN);
-      if (cached) return cached;
-
-      const data = await fetchToggl(
-        `${TOGGL_REPORTS_BASE}/workspace/${wsId}/search/time_entries`,
-        token,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            start_date: args.startDate,
-            end_date: args.endDate,
-            page_size: 5000,
-          }),
-        }
+    timeTrackingEntries: async (
+      _: any,
+      args: { startDate: string; endDate: string; limit?: number; offset?: number },
+      ctx: Context,
+    ) => {
+      const limit = args.limit ?? 5000;
+      const offset = args.offset ?? 0;
+      const { rows } = await ctx.db.query(
+        `SELECT id, description, start, stop, seconds, user_id, project_id, tag_ids, billable
+         FROM tt_entries
+         WHERE deleted_at IS NULL AND start >= $1 AND start < $2
+         ORDER BY start DESC
+         LIMIT $3 OFFSET $4`,
+        [args.startDate, args.endDate, limit, offset],
       );
-
-      // Reports API returns grouped items, each with a time_entries[] sub-array.
-      // Double-loop: outer item has user_id/description/project_id/tag_ids,
-      // each time_entries[i] has id/start/stop/seconds.
-      const items = (Array.isArray(data) ? data : []).flat();
-      const entries: any[] = [];
-      for (const item of items) {
-        const subEntries = item.time_entries || [];
-        for (const te of subEntries) {
-          entries.push({
-            id: te.id,
-            description: item.description || "",
-            start: te.start,
-            stop: te.stop,
-            seconds: te.seconds ?? 0,
-            projectId: item.project_id,
-            tagIds: item.tag_ids || [],
-            userId: item.user_id,
-          });
-        }
-      }
-
-      cacheSet(cacheKey, entries);
-      return entries;
+      return rows.map((r: any) => ({
+        id: String(r.id),
+        description: r.description || "",
+        start: r.start,
+        stop: r.stop,
+        seconds: r.seconds ?? 0,
+        projectId: r.project_id,
+        tagIds: r.tag_ids || [],
+        userId: r.user_id,
+        billable: r.billable ?? false,
+      }));
     },
 
-    timeTrackingProjects: async () => {
-      const token = getToken();
-      const wsId = await getWorkspaceId(token);
-      const cacheKey = "toggl:projects";
-      const cached = cacheGet(cacheKey, ONE_HOUR);
-      if (cached) return cached;
-
-      const projects = await fetchToggl(
-        `${TOGGL_API_BASE}/workspaces/${wsId}/projects`,
-        token
+    timeTrackingProjects: async (_: any, __: any, ctx: Context) => {
+      const { rows } = await ctx.db.query(
+        `SELECT id, name, client_id, color, active FROM tt_projects ORDER BY name`,
       );
-      const result = (projects || []).map((p: any) => ({
+      return rows.map((p: any) => ({
         id: p.id,
         name: p.name,
         clientId: p.client_id,
         color: p.color,
         active: p.active,
       }));
-      cacheSet(cacheKey, result);
-      return result;
     },
 
-    timeTrackingClients: async () => {
-      const token = getToken();
-      const wsId = await getWorkspaceId(token);
-      const cacheKey = "toggl:clients";
-      const cached = cacheGet(cacheKey, ONE_HOUR);
-      if (cached) return cached;
-
-      const clients = await fetchToggl(
-        `${TOGGL_API_BASE}/workspaces/${wsId}/clients`,
-        token
+    timeTrackingClients: async (_: any, __: any, ctx: Context) => {
+      const { rows } = await ctx.db.query(
+        `SELECT id, name FROM tt_clients ORDER BY name`,
       );
-      const result = (clients || []).map((c: any) => ({
+      return rows.map((c: any) => ({
         id: c.id,
         name: c.name,
       }));
-      cacheSet(cacheKey, result);
-      return result;
     },
 
-    timeTrackingTags: async () => {
-      const token = getToken();
-      const wsId = await getWorkspaceId(token);
-      const cacheKey = "toggl:tags";
-      const cached = cacheGet(cacheKey, ONE_HOUR);
-      if (cached) return cached;
-
-      const tags = await fetchToggl(
-        `${TOGGL_API_BASE}/workspaces/${wsId}/tags`,
-        token
+    timeTrackingTags: async (_: any, __: any, ctx: Context) => {
+      const { rows } = await ctx.db.query(
+        `SELECT id, name FROM tt_tags ORDER BY name`,
       );
-      const result = (tags || []).map((t: any) => ({
+      return rows.map((t: any) => ({
         id: t.id,
         name: t.name,
       }));
-      cacheSet(cacheKey, result);
-      return result;
     },
 
     timeTrackingCurrentTimer: async () => {
@@ -313,7 +269,7 @@ export const timeTrackingResolvers = {
       let members = cacheGet(membersCacheKey, ONE_HOUR) as any[] | null;
       if (!members) {
         // Trigger members fetch via the existing resolver
-        members = await timeTrackingResolvers.Query.timeTrackingMembers(null, null, ctx);
+        members = await timeTrackingResolvers.Query.timeTrackingMembers(null, null, ctx) as any[];
       }
       const memberMap = new Map<number, { name: string; role: string }>();
       for (const m of members || []) {
@@ -324,7 +280,7 @@ export const timeTrackingResolvers = {
       const projectsCacheKey = "toggl:projects";
       let projects = cacheGet(projectsCacheKey, ONE_HOUR) as any[] | null;
       if (!projects) {
-        projects = await timeTrackingResolvers.Query.timeTrackingProjects();
+        projects = await timeTrackingResolvers.Query.timeTrackingProjects(null, null, ctx);
       }
       const projectMap = new Map<number, string>();
       for (const p of projects || []) {

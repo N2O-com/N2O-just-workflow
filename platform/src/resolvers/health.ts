@@ -14,6 +14,8 @@ const STREAMS: StreamConfig[] = [
   { stream: "tasks", table: "tasks", timestampCol: "created_at" },
   { stream: "developer_context", table: "developer_context", timestampCol: "recorded_at" },
   { stream: "skill_versions", table: "skill_versions", timestampCol: "introduced_at" },
+  { stream: "tt_entries", table: "tt_entries", timestampCol: "synced_at" },
+  { stream: "tt_sync_log", table: "tt_sync_log", timestampCol: "started_at" },
 ];
 
 export const healthResolvers = {

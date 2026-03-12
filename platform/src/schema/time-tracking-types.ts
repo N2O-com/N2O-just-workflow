@@ -9,8 +9,8 @@ export const timeTrackingTypeDefs = `#graphql
     """Team members from the time tracking provider"""
     timeTrackingMembers: [TimeTrackingMember!]!
 
-    """Time entries from the Reports API (consolidated query)"""
-    timeTrackingEntries(startDate: String!, endDate: String!): [TimeTrackingEntry!]!
+    """Time entries from synced Postgres store"""
+    timeTrackingEntries(startDate: String!, endDate: String!, limit: Int, offset: Int): [TimeTrackingEntry!]!
 
     """Projects in the workspace"""
     timeTrackingProjects: [TimeTrackingProject!]!
@@ -83,7 +83,7 @@ export const timeTrackingTypeDefs = `#graphql
   }
 
   type TimeTrackingEntry {
-    id: Int
+    id: ID!
     description: String
     start: String
     stop: String
@@ -91,6 +91,7 @@ export const timeTrackingTypeDefs = `#graphql
     projectId: Int
     tagIds: [Int!]
     userId: Int
+    billable: Boolean
   }
 
   type TimeTrackingCurrentTimer {
