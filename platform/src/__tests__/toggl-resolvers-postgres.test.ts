@@ -26,8 +26,10 @@ vi.mock("../services/toggl-sync.js", () => ({
 import { timeTrackingResolvers } from "../resolvers/time-tracking.js";
 import { healthResolvers } from "../resolvers/health.js";
 import { fetchToggl } from "../services/toggl-api.js";
+import { runSync } from "../services/toggl-sync.js";
 
 const mockFetchToggl = vi.mocked(fetchToggl);
+const mockRunSync = vi.mocked(runSync);
 
 function createMockCtx(queryResponses: Record<string, any[]> = {}) {
   const queryLog: Array<{ sql: string; params: any[] }> = [];
@@ -221,5 +223,113 @@ describe("dataHealth includes sync streams", () => {
     const streamNames = result.streams.map((s: any) => s.stream);
     expect(streamNames).toContain("tt_entries");
     expect(streamNames).toContain("tt_sync_log");
+  });
+});
+
+// ── E2E verification (Task #4) ──────────────────────────
+
+describe("E2E: soft-deleted entries are filtered out", () => {
+  it("entries with deleted_at set are excluded from results", async () => {
+    const { ctx, queryLog } = createMockCtx({
+      // Only non-deleted entries should be returned
+      tt_entries: [
+        { id: 1, description: "Active entry", start: "2026-03-01T09:00:00Z", stop: "2026-03-01T10:00:00Z", seconds: 3600, user_id: 1, project_id: 10, tag_ids: [], billable: false },
+      ],
+    });
+
+    const result = await timeTrackingResolvers.Query.timeTrackingEntries(
+      null, { startDate: "2026-03-01", endDate: "2026-03-07" }, ctx,
+    );
+
+    // The SQL WHERE clause must include deleted_at IS NULL
+    const entrySql = queryLog.find((q) => q.sql.includes("tt_entries"));
+    expect(entrySql!.sql).toContain("deleted_at IS NULL");
+
+    // Only non-deleted entries returned
+    expect(result).toHaveLength(1);
+    expect(result[0].description).toBe("Active entry");
+  });
+});
+
+describe("E2E: historical data beyond 60 days is queryable", () => {
+  beforeEach(() => {
+    mockFetchToggl.mockReset();
+  });
+
+  it("entries from 90 days ago are returned when date range covers them", async () => {
+    const { ctx } = createMockCtx({
+      tt_entries: [
+        { id: 200, description: "Old entry", start: "2025-12-15T09:00:00Z", stop: "2025-12-15T17:00:00Z", seconds: 28800, user_id: 2, project_id: 5, tag_ids: [3], billable: true },
+      ],
+    });
+
+    const result = await timeTrackingResolvers.Query.timeTrackingEntries(
+      null, { startDate: "2025-12-01", endDate: "2025-12-31" }, ctx,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("200");
+    expect(result[0].seconds).toBe(28800);
+    expect(result[0].billable).toBe(true);
+    // No Toggl API call — Postgres serves historical data
+    expect(mockFetchToggl).not.toHaveBeenCalled();
+  });
+});
+
+describe("E2E: triggerTimeTrackingSync mutation", () => {
+  beforeEach(() => {
+    mockRunSync.mockReset();
+  });
+
+  it("triggers sync and returns status", async () => {
+    mockRunSync.mockResolvedValue({
+      status: "success",
+      entriesUpserted: 42,
+      lastSyncAt: "2026-03-12T12:00:00Z",
+    });
+    const { ctx } = createMockCtx();
+
+    const result = await timeTrackingResolvers.Mutation.triggerTimeTrackingSync(null, null, ctx);
+
+    expect(mockRunSync).toHaveBeenCalledWith(ctx.db);
+    expect(result.status).toBe("success");
+    expect(result.entriesUpserted).toBe(42);
+    expect(result.lastSyncAt).toBe("2026-03-12T12:00:00Z");
+  });
+
+  it("returns error status when sync fails", async () => {
+    mockRunSync.mockResolvedValue({
+      status: "error",
+      entriesUpserted: 0,
+      error: "Reference sync failed",
+    });
+    const { ctx } = createMockCtx();
+
+    const result = await timeTrackingResolvers.Mutation.triggerTimeTrackingSync(null, null, ctx);
+
+    expect(result.status).toBe("error");
+    expect(result.entriesUpserted).toBe(0);
+  });
+});
+
+describe("E2E: zero Toggl API calls for migrated resolvers", () => {
+  beforeEach(() => {
+    mockFetchToggl.mockReset();
+  });
+
+  it("entries + projects + clients + tags make zero fetchToggl calls", async () => {
+    const { ctx } = createMockCtx({
+      tt_entries: [],
+      tt_projects: [],
+      tt_clients: [],
+      tt_tags: [],
+    });
+
+    await timeTrackingResolvers.Query.timeTrackingEntries(null, { startDate: "2026-03-01", endDate: "2026-03-07" }, ctx);
+    await timeTrackingResolvers.Query.timeTrackingProjects(null, null, ctx);
+    await timeTrackingResolvers.Query.timeTrackingClients(null, null, ctx);
+    await timeTrackingResolvers.Query.timeTrackingTags(null, null, ctx);
+
+    expect(mockFetchToggl).not.toHaveBeenCalled();
   });
 });
