@@ -11,9 +11,21 @@ import {
   TOGGL_API_BASE,
   TOGGL_REPORTS_BASE,
 } from "../services/toggl-api.js";
+import { runSync } from "../services/toggl-sync.js";
 
 const ONE_HOUR = 60 * 60 * 1000;
 const FOUR_MIN = 4 * 60 * 1000;
+
+// Role and active overrides keyed by Toggl user ID.
+// These supplement the developers DB table — entries here take lowest priority
+// (DB role wins if set, then this map, then default "developer").
+const MEMBER_OVERRIDES: Record<number, { role?: string; active?: boolean }> = {
+  12780578: { role: "leadership" },          // Wiley Simonds
+  12780390: { role: "leadership" },          // Srimaan Bekkari
+  12900990: { role: "non-developer" },       // Ben
+  12900991: { role: "non-developer" },       // Mckenzie
+  12879802: { active: false },               // Justinnrobot (inactive account)
+};
 
 // Cached workspace ID — fetched once then reused.
 let cachedWorkspaceId: number | null = null;
@@ -57,7 +69,6 @@ export const timeTrackingResolvers = {
     },
 
     timeTrackingMembers: async (_: any, __: any, ctx: Context) => {
-      requireAdmin(ctx);
       const token = getToken();
       const wsId = await getWorkspaceId(token);
       const cacheKey = "toggl:members";
@@ -113,14 +124,23 @@ export const timeTrackingResolvers = {
         // Column doesn't exist yet — use defaults
       }
 
-      const result = memberList.map((m) => {
+      // Deduplicate by user ID (Toggl API can return duplicates)
+      const seen = new Set<number>();
+      const deduped = memberList.filter((m) => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        return true;
+      });
+
+      const result = deduped.map((m) => {
         const dev = devMap.get(m.id);
+        const override = MEMBER_OVERRIDES[m.id];
         return {
           id: m.id,
           name: m.name,
           email: m.email,
-          role: dev?.role ?? "developer",
-          active: true,
+          role: dev?.role ?? override?.role ?? "developer",
+          active: override?.active ?? true,
         };
       });
 
@@ -143,6 +163,7 @@ export const timeTrackingResolvers = {
           body: JSON.stringify({
             start_date: args.startDate,
             end_date: args.endDate,
+            page_size: 5000,
           }),
         }
       );
@@ -248,6 +269,145 @@ export const timeTrackingResolvers = {
       };
     },
 
+    timeTrackingSummary: async (_: any, args: { startDate: string; endDate: string }, ctx: Context) => {
+      const token = getToken();
+      const wsId = await getWorkspaceId(token);
+
+      // Fetch entries (reuses cache from timeTrackingEntries)
+      const entriesCacheKey = `toggl:entries:${args.startDate}:${args.endDate}`;
+      let entries = cacheGet(entriesCacheKey, FOUR_MIN) as any[] | null;
+      if (!entries) {
+        const data = await fetchToggl(
+          `${TOGGL_REPORTS_BASE}/workspace/${wsId}/search/time_entries`,
+          token,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              start_date: args.startDate,
+              end_date: args.endDate,
+              page_size: 5000,
+            }),
+          }
+        );
+        const items = (Array.isArray(data) ? data : []).flat();
+        entries = [];
+        for (const item of items) {
+          const subEntries = item.time_entries || [];
+          for (const te of subEntries) {
+            entries.push({
+              id: te.id,
+              description: item.description || "",
+              start: te.start,
+              stop: te.stop,
+              seconds: te.seconds ?? 0,
+              projectId: item.project_id,
+              userId: item.user_id,
+            });
+          }
+        }
+        cacheSet(entriesCacheKey, entries);
+      }
+
+      // Fetch members for name resolution
+      const membersCacheKey = "toggl:members";
+      let members = cacheGet(membersCacheKey, ONE_HOUR) as any[] | null;
+      if (!members) {
+        // Trigger members fetch via the existing resolver
+        members = await timeTrackingResolvers.Query.timeTrackingMembers(null, null, ctx);
+      }
+      const memberMap = new Map<number, { name: string; role: string }>();
+      for (const m of members || []) {
+        memberMap.set(m.id, { name: m.name, role: m.role });
+      }
+
+      // Fetch projects for name resolution
+      const projectsCacheKey = "toggl:projects";
+      let projects = cacheGet(projectsCacheKey, ONE_HOUR) as any[] | null;
+      if (!projects) {
+        projects = await timeTrackingResolvers.Query.timeTrackingProjects();
+      }
+      const projectMap = new Map<number, string>();
+      for (const p of projects || []) {
+        projectMap.set(p.id, p.name);
+      }
+
+      // Aggregate: hours per member, daily breakdown, top entries
+      const byMember = new Map<number, {
+        totalSeconds: number;
+        daily: Map<string, number>;
+        byDescription: Map<string, { seconds: number; projectId: number | null }>;
+      }>();
+
+      for (const e of entries) {
+        if (!e.userId) continue;
+        if (!byMember.has(e.userId)) {
+          byMember.set(e.userId, { totalSeconds: 0, daily: new Map(), byDescription: new Map() });
+        }
+        const m = byMember.get(e.userId)!;
+        m.totalSeconds += e.seconds;
+
+        // Daily breakdown
+        const day = e.start ? e.start.slice(0, 10) : "unknown";
+        m.daily.set(day, (m.daily.get(day) || 0) + e.seconds);
+
+        // Group by description
+        const desc = e.description || "(no description)";
+        const existing = m.byDescription.get(desc);
+        if (existing) {
+          existing.seconds += e.seconds;
+        } else {
+          m.byDescription.set(desc, { seconds: e.seconds, projectId: e.projectId });
+        }
+      }
+
+      let totalHours = 0;
+      const memberSummaries = [];
+
+      for (const [userId, data] of byMember) {
+        const hours = Math.round((data.totalSeconds / 3600) * 100) / 100;
+        totalHours += hours;
+        const info = memberMap.get(userId);
+
+        // Top 5 entries by hours
+        const topEntries = [...data.byDescription.entries()]
+          .map(([desc, d]) => ({
+            description: desc,
+            hours: Math.round((d.seconds / 3600) * 100) / 100,
+            projectName: d.projectId ? (projectMap.get(d.projectId) || null) : null,
+          }))
+          .sort((a, b) => b.hours - a.hours)
+          .slice(0, 5);
+
+        // Daily hours sorted by date
+        const dailyHours = [...data.daily.entries()]
+          .map(([date, secs]) => ({
+            date,
+            hours: Math.round((secs / 3600) * 100) / 100,
+          }))
+          .sort((a, b) => a.date.localeCompare(b.date));
+
+        memberSummaries.push({
+          userId,
+          name: info?.name || `User ${userId}`,
+          role: info?.role || "developer",
+          totalHours: hours,
+          dailyHours,
+          topEntries,
+        });
+      }
+
+      // Sort by total hours descending
+      memberSummaries.sort((a, b) => b.totalHours - a.totalHours);
+
+      return {
+        startDate: args.startDate,
+        endDate: args.endDate,
+        totalHours: Math.round(totalHours * 100) / 100,
+        memberCount: memberSummaries.length,
+        members: memberSummaries,
+      };
+    },
+
     timeTrackingDashboardActivity: async () => {
       const token = getToken();
       const wsId = await getWorkspaceId(token);
@@ -273,6 +433,16 @@ export const timeTrackingResolvers = {
   },
 
   Mutation: {
+    triggerTimeTrackingSync: async (_: any, __: any, ctx: Context) => {
+      requireAdmin(ctx);
+      const result = await runSync(ctx.db);
+      return {
+        status: result.status,
+        lastSyncAt: result.lastSyncAt ?? null,
+        entriesUpserted: result.entriesUpserted,
+      };
+    },
+
     updateTimeTrackingMember: async (
       _: any,
       args: { id: number; role?: string; active?: boolean },

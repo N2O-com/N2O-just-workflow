@@ -26,11 +26,23 @@ export const timeTrackingTypeDefs = `#graphql
 
     """Dashboard activity for the workspace"""
     timeTrackingDashboardActivity: [TimeTrackingDashboardActivity!]!
+
+    """Pre-aggregated time tracking summary: hours per member with top entries. Use this instead of raw timeTrackingEntries for overview questions."""
+    timeTrackingSummary(startDate: String!, endDate: String!): TimeTrackingSummaryResult!
   }
 
   extend type Mutation {
     """Update a team member's role or active status"""
     updateTimeTrackingMember(id: Int!, role: String, active: Boolean): TimeTrackingMember
+
+    """Trigger a manual time tracking sync (admin only)"""
+    triggerTimeTrackingSync: TogglSyncStatus!
+  }
+
+  type TogglSyncStatus {
+    status: String!
+    lastSyncAt: String
+    entriesUpserted: Int
   }
 
   type TimeTrackingUser {
@@ -95,5 +107,33 @@ export const timeTrackingTypeDefs = `#graphql
     projectId: Int
     start: String
     stop: String
+  }
+
+  type TimeTrackingSummaryResult {
+    startDate: String!
+    endDate: String!
+    totalHours: Float!
+    memberCount: Int!
+    members: [TimeTrackingMemberSummary!]!
+  }
+
+  type TimeTrackingMemberSummary {
+    userId: Int!
+    name: String!
+    role: String!
+    totalHours: Float!
+    dailyHours: [TimeTrackingDailyHours!]!
+    topEntries: [TimeTrackingTopEntry!]!
+  }
+
+  type TimeTrackingDailyHours {
+    date: String!
+    hours: Float!
+  }
+
+  type TimeTrackingTopEntry {
+    description: String!
+    hours: Float!
+    projectName: String
   }
 `;
