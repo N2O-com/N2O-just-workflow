@@ -26,7 +26,16 @@
 # Per-developer state
 .pm/.last_seen_version
 
+# Dependencies
+node_modules/
+package.json
+package-lock.json
+
 # Environment
 .env
 .env.local
 .env.*.local
+
+# SQLite WAL/SHM (transient database files)
+*.db-shm
+*.db-wal

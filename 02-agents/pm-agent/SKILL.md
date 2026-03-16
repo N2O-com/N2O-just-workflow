@@ -522,35 +522,45 @@ sqlite3 .pm/tasks.db "INSERT INTO workflow_events (sprint, task_num, event_type,
 
 **Purpose**: Stress-test the spec's design decisions, data model, edge cases, and assumptions before committing to a task breakdown. It's 10x cheaper to find a design flaw here than during implementation.
 
-### Two-Agent Pipeline
+### Three-Agent Pipeline
 
-Uses two sequential subagents. Detailed prompts are in `templates/adversarial-review.md`.
+Uses three sequential subagents. Detailed prompts are in `templates/adversarial-review.md`.
 
 **Agent 1 — Question Generator**: Reads the spec, schema, and audit context. Generates 8-15 adversarial questions covering categories relevant to the spec (state transitions, race conditions, edge cases, failure modes, data integrity, etc.). Each question includes 2-4 options with a recommended choice and schema/spec impact notes.
 
-**Agent 2 — Review & Present**: Reviews Agent 1's output. Challenges recommendations, adds implementation notes to each option, flags low-value questions as SKIP, adds 1-2 missed questions if needed. Then reorders surviving questions: groups by theme, foundational decisions first, leaf decisions last. Produces the final formatted review.
+**Agent 2 — Triage & Self-Answer**: Attempts to auto-resolve each question using (in priority order): the spec itself, project conventions, platform knowledge, industry best practice, and common sense. Questions where the answer is ≥90% clear are classified as AUTO-RESOLVED; genuinely ambiguous trade-offs are classified as NEEDS-DECISION.
+
+**Agent 3 — Review & Present**: Validates self-answers (promotes any shaky ones back to NEEDS-DECISION), enriches remaining questions with impl notes, and produces a two-section output: a summary table of auto-resolved questions, and full option tables for questions needing human decisions.
 
 ### Presenting to User
 
-Present the full adversarial review. The format allows rapid responses:
+The review has two sections, each with its own response format:
 
+**Auto-Resolved section** — summary table of self-answered questions. User can:
+- Accept all: "all good"
+- Override specific ones: "override 3" (shows full options for that question)
+
+**Needs-Decision section** — full option tables. User responds with number + letter:
 ```
-User: "1A, 2B, 3A, 4C, 5A, 6A, 7A, 8B"
+User: "all good" + "1A, 2B, 3C"
 ```
 
 ### Processing Decisions
 
 After the user responds:
 
-1. **Parse responses** — map each answer to the chosen option
-2. **Update the spec's Open Questions section** — record each decision as a resolved question:
+1. **Apply auto-resolved answers** — unless overridden, apply all self-answers
+2. **Parse user decisions** — map each NEEDS-DECISION answer to the chosen option
+3. **Handle overrides** — if user overrides an auto-resolved question, present full options and wait for their choice
+4. **Update the spec's Open Questions section** — record each decision as a resolved question:
    ```
    ~~Q: {adversarial question}~~ **Resolved**: {chosen option + rationale}
    ```
-3. **Apply schema changes** required by the chosen options
-4. **Summarize changes** — tell the user what was updated
-5. **Get explicit approval** — "Spec updated with adversarial decisions. Ready to create tasks?"
-6. **Proceed to Phase 3** (Sprint Planning) only after user confirms
+   For auto-resolved: add `(auto-resolved)` tag
+5. **Apply schema changes** required by the chosen options
+6. **Summarize changes** — tell the user what was updated
+7. **Get explicit approval** — "Spec updated with adversarial decisions. Ready to create tasks?"
+8. **Proceed to Phase 3** (Sprint Planning) only after user confirms
 
 ### When to Re-Run
 

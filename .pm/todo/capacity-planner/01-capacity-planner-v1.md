@@ -108,6 +108,7 @@ Future iterations will:
 ### Out of scope (future specs)
 
 - **Unified sidebar + gantt labels** — Merge the ProjectSidebar and gantt label column into a single left panel where each project row aligns 1:1 with its gantt bar. Stage headers ("ACTIVE CLIENTS", "PROSPECTIVE") become thin dividers spanning both the sidebar and gantt. Company headers expand/collapse their children in both panels simultaneously. Eliminates the duplicative project name columns. This is the "Option B" approach — most polished result but a meaningful layout refactor touching ProjectSidebar, GanttTimeline, and scroll sync logic.
+- **Effort vs. calendar duration** — A project's timeline (start → end) represents the calendar window available, but the actual effort to complete may be much shorter. Example: a 6-month contract window where the work takes 2 weeks. Both dimensions are useful — calendar duration for capacity/staffing planning (how long is a seat occupied?), effort estimate for workload forecasting (how much work is this?). Future iteration should add an `effort_hours` or `effort_weeks` field alongside `start`/`end`, and surface both in the detail panel and demand chart (e.g., effort-weighted demand vs. seat-count demand).
 - Dynamic supply model (per-person availability curves, academic calendar adjustments) → future spec
 - Attio CRM integration → future spec
 - Variable seat phases → future spec
@@ -144,3 +145,4 @@ Future iterations will:
 - Supply model + roadmap: `platform/reference/n2o-supply-capacity-tracking.md`
 - Ontology page (full-bleed pattern): `dashboard/src/app/ontology/page.tsx`
 - Dashboard theme: `dashboard/src/app/globals.css`
+- Capacity notes: https://ai.acquisition.com/chat/c250dcda-ad2a-4a05-bbf6-8216aab3dee4
